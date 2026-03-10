@@ -27,7 +27,7 @@
 
 #include "net_common.h"
 #include "net_server.h"
-#include "net_websockets.h"
+#include "net_webxdc.h"
 
 //
 // People can become confused about how dedicated servers work.  Game
@@ -63,7 +63,7 @@ void NET_DedicatedServer(void)
 
     NET_OpenLog();
     NET_SV_Init();
-    NET_SV_AddModule(&net_websockets_module);
+    NET_SV_AddModule(&net_webxdc_module);
 
     while (true) {
         NET_SV_Run();

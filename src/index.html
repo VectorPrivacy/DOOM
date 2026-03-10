@@ -1,106 +1,764 @@
 <!DOCTYPE html>
-<html lang="en-us">
-    <head>
-        <title>Websockets Doom</title>
-        <link rel="shortcut icon" href="favicon.ico" type="image/x-icon" />
-        <style>
-            @font-face {
-                font-family: "VT323";
-                font-style: normal;
-                font-weight: 400;
-                src: url(https://fonts.gstatic.com/s/vt323/v12/pxiKyp0ihIEF2isfFJXUdVNF.woff2) format("woff2");
-                unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-            }
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>VectorDoom</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+    <style>
+        :root {
+            --doom-red: #b30000;
+            --doom-red-bright: #e60000;
+            --doom-orange: #cc5500;
+            --doom-orange-glow: #ff6600;
+            --doom-dark: #0a0000;
+            --doom-darker: #050000;
+            --doom-gray-light: #c0c0c0;
+            --doom-gray: #808080;
+            --doom-gray-dark: #404040;
+            --doom-text: #cccccc;
+            --doom-text-dim: #666666;
+            --btn-highlight: #e0e0e0;
+            --btn-face: #b0b0b0;
+            --btn-shadow: #505050;
+            --btn-dark-shadow: #202020;
+        }
 
-            * {
-                box-sizing: border-box;
-            }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
 
-            html {
-                font-family: "VT323", monospace;
-                font-size: 12px;
-            }
+        body {
+            background: #000;
+            color: var(--doom-text);
+            font-family: 'Courier New', 'Lucida Console', monospace;
+            height: 100vh;
+            height: 100dvh;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
 
-            body {
-                background-color: #111;
-                margin: 0;
-                padding: 2ch;
-                /* vietnamese */
-            }
+        /* ===== ROTATE PROMPT (portrait mobile) ===== */
+        #rotate-prompt {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: var(--doom-darker);
+            z-index: 9999;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: var(--doom-red);
+            font-family: 'Courier New', monospace;
+            font-size: 18px;
+        }
+        @media (pointer: coarse) and (orientation: portrait) and (max-width: 600px) {
+            #rotate-prompt { display: flex !important; }
+            #crt-frame, #loading-screen { display: none !important; }
+        }
+        .rotate-svg {
+            animation: rotate-anim 2s ease-in-out infinite;
+            margin-bottom: 20px;
+        }
+        @keyframes rotate-anim {
+            0%, 100% { transform: rotate(0deg); }
+            25% { transform: rotate(-15deg); }
+            75% { transform: rotate(15deg); }
+        }
 
-            #container {
-                max-width: 930px;
-                margin: auto;
-            }
+        /* ===== CRT MONITOR FRAME ===== */
+        #crt-frame {
+            position: relative;
+            width: min(96vw, calc((96vh - 40px) * 1.4));
+            width: min(96vw, calc((96dvh - 40px) * 1.4));
+            aspect-ratio: 4 / 3;
+            background: #1a1a1a;
+            border-radius: 18px;
+            padding: 16px;
+            box-shadow:
+                0 0 60px rgba(204, 68, 0, 0.15),
+                0 0 120px rgba(204, 68, 0, 0.05),
+                inset 0 2px 0 rgba(255,255,255,0.08),
+                inset 0 -2px 0 rgba(0,0,0,0.5);
+            border: 2px solid #2a2a2a;
+        }
 
-            .frame {
-                padding-right: 0;
-                margin-left: auto;
-                margin-right: auto;
-                display: block;
-            }
+        /* Monitor bezel details */
+        #crt-frame::before {
+            content: '';
+            position: absolute;
+            inset: 3px;
+            border-radius: 16px;
+            border: 1px solid #333;
+            pointer-events: none;
+            z-index: 1;
+        }
 
-            /* the canvas *must not* have any border or padding, or mouse coords will be wrong */
-            canvas.frame {
-                background-color: black;
-                width: 800px;
-                height: 600px;
-            }
-        </style>
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
-    </head>
-    <body>
-        <div id="container" class="noselect">
-            <canvas class="frame" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+        /* Orange power LED */
+        #crt-frame::after {
+            content: '';
+            position: absolute;
+            bottom: 6px;
+            right: 24px;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--doom-orange);
+            box-shadow: 0 0 6px var(--doom-orange-glow), 0 0 12px rgba(255,102,0,0.4);
+            animation: led-pulse 3s ease-in-out infinite;
+            z-index: 2;
+        }
+        @keyframes led-pulse {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 1; box-shadow: 0 0 8px var(--doom-orange-glow), 0 0 16px rgba(255,102,0,0.6); }
+        }
+
+        /* Screen area inside monitor */
+        #screen-area {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 2px solid #111;
+            box-shadow: inset 0 0 30px rgba(0,0,0,0.8);
+        }
+
+        /* Scanline overlay */
+        #screen-area::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0, 0, 0, 0.08) 2px,
+                rgba(0, 0, 0, 0.08) 4px
+            );
+            pointer-events: none;
+            z-index: 50;
+        }
+
+        /* ===== CANVAS ===== */
+        canvas {
+            position: absolute;
+            inset: 0;
+            width: 100% !important;
+            height: 100% !important;
+            display: block;
+            background: #000;
+            image-rendering: pixelated;
+            z-index: 1;
+        }
+
+        /* ===== LOADING SCREEN ===== */
+        #loading-screen {
+            position: absolute;
+            inset: 0;
+            background: var(--doom-darker);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            transition: opacity 0.4s ease-out;
+        }
+        #loading-screen.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .doom-logo {
+            font-size: clamp(32px, 7vw, 72px);
+            font-weight: bold;
+            color: var(--doom-red);
+            letter-spacing: 0.15em;
+            text-shadow:
+                0 0 20px rgba(179,0,0,0.8),
+                0 0 40px rgba(179,0,0,0.4),
+                0 4px 0 #400,
+                0 5px 0 #300;
+            margin-bottom: 24px;
+            user-select: none;
+            animation: logo-flicker 4s ease-in-out infinite;
+        }
+        @keyframes logo-flicker {
+            0%, 100% { opacity: 1; }
+            48% { opacity: 1; }
+            49% { opacity: 0.85; }
+            50% { opacity: 1; }
+            92% { opacity: 1; }
+            93% { opacity: 0.9; }
+            94% { opacity: 1; }
+        }
+
+        .loading-status {
+            font-size: 13px;
+            color: var(--doom-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        .loading-bar-outer {
+            width: min(280px, 70vw);
+            height: 8px;
+            background: #111;
+            margin-top: 12px;
+            border: 1px solid #333;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
+        }
+        .loading-bar-inner {
+            height: 100%;
+            background: linear-gradient(180deg, var(--doom-red-bright) 0%, var(--doom-red) 50%, #800 100%);
+            width: 0%;
+            transition: width 0.3s ease;
+            box-shadow: 0 0 6px rgba(179,0,0,0.5);
+        }
+
+        /* ===== MENU OVERLAY ===== */
+        #menu-overlay {
+            position: absolute;
+            inset: 0;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 90;
+            background: radial-gradient(ellipse at center, rgba(20,0,0,0.95) 0%, rgba(5,0,0,0.98) 100%);
+        }
+        #menu-overlay.visible {
+            display: flex;
+        }
+
+        .menu-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            max-width: 380px;
+            width: 90%;
+        }
+
+        .menu-title {
+            font-size: clamp(28px, 6vw, 56px);
+            font-weight: bold;
+            color: var(--doom-red);
+            letter-spacing: 0.12em;
+            text-shadow:
+                0 0 15px rgba(179,0,0,0.6),
+                0 3px 0 #400;
+            margin-bottom: 8px;
+            user-select: none;
+        }
+
+        .menu-subtitle {
+            font-size: 11px;
+            color: var(--doom-orange);
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+            margin-bottom: 12px;
+            opacity: 0.7;
+        }
+
+        /* ===== RETRO BEVELED BUTTONS ===== */
+        .doom-btn {
+            display: block;
+            width: 100%;
+            padding: 10px 16px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            cursor: pointer;
+            border: none;
+            outline: none;
+            position: relative;
+            text-align: center;
+            user-select: none;
+            transition: filter 0.05s;
+        }
+
+        .doom-btn-primary {
+            background: var(--doom-red);
+            color: #fff;
+            border-top: 2px solid #ff4444;
+            border-left: 2px solid #ff4444;
+            border-right: 2px solid #500;
+            border-bottom: 2px solid #300;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+            box-shadow: 0 2px 8px rgba(179,0,0,0.4);
+        }
+        .doom-btn-primary:hover {
+            background: var(--doom-red-bright);
+            border-top-color: #ff6666;
+            border-left-color: #ff6666;
+        }
+        .doom-btn-primary:active {
+            background: #900;
+            border-top: 2px solid #500;
+            border-left: 2px solid #500;
+            border-right: 2px solid #ff4444;
+            border-bottom: 2px solid #ff4444;
+        }
+
+        .doom-btn-secondary {
+            background: var(--doom-gray);
+            color: #fff;
+            border-top: 2px solid var(--doom-gray-light);
+            border-left: 2px solid var(--doom-gray-light);
+            border-right: 2px solid var(--btn-dark-shadow);
+            border-bottom: 2px solid var(--btn-dark-shadow);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+        }
+        .doom-btn-secondary:hover {
+            background: #999;
+        }
+        .doom-btn-secondary:active {
+            background: #666;
+            border-top: 2px solid var(--btn-dark-shadow);
+            border-left: 2px solid var(--btn-dark-shadow);
+            border-right: 2px solid var(--doom-gray-light);
+            border-bottom: 2px solid var(--doom-gray-light);
+        }
+
+        /* ===== TOGGLE BUTTONS (game mode) ===== */
+        .toggle-group {
+            display: flex;
+            gap: 8px;
+            width: 100%;
+        }
+        .toggle-group .doom-btn {
+            flex: 1;
+            padding: 8px 10px;
+            font-size: 12px;
+            opacity: 0.5;
+        }
+        .toggle-group .doom-btn.active {
+            opacity: 1;
+        }
+        .toggle-group .doom-btn.active.doom-btn-primary {
+            box-shadow: 0 0 12px rgba(179,0,0,0.6), inset 0 0 8px rgba(255,255,255,0.1);
+        }
+
+        /* ===== MODE LABEL ===== */
+        .mode-label {
+            font-size: 11px;
+            color: var(--doom-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            margin-bottom: 6px;
+            width: 100%;
+        }
+
+        /* ===== WAITING MESSAGE ===== */
+        .waiting-msg {
+            font-size: 13px;
+            color: var(--doom-text-dim);
+            text-align: center;
+            letter-spacing: 0.05em;
+            animation: blink-waiting 1.5s ease-in-out infinite;
+        }
+        @keyframes blink-waiting {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+        }
+
+        /* ===== FOOTER ===== */
+        .menu-footer {
+            font-size: 10px;
+            color: var(--doom-gray-dark);
+            text-align: center;
+            margin-top: 16px;
+            min-height: 14px;
+            letter-spacing: 0.05em;
+        }
+
+        /* ===== TYPEWRITER EFFECT ===== */
+        .typewriter {
+            overflow: hidden;
+            white-space: nowrap;
+            border-right: 1px solid var(--doom-gray-dark);
+            animation: typewriter-cursor 0.8s step-end infinite;
+        }
+        @keyframes typewriter-cursor {
+            0%, 100% { border-right-color: var(--doom-gray-dark); }
+            50% { border-right-color: transparent; }
+        }
+
+        /* ===== SCREEN SECTIONS ===== */
+        .screen-section {
+            display: none;
+        }
+        .screen-section.active {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+        }
+
+        /* ===== SKULL CURSOR INDICATOR ===== */
+        .skull-indicator {
+            display: inline-block;
+            color: var(--doom-red);
+            margin-right: 4px;
+            animation: skull-bob 0.6s ease-in-out infinite alternate;
+        }
+        @keyframes skull-bob {
+            from { transform: translateX(-2px); }
+            to { transform: translateX(2px); }
+        }
+
+        /* ===== ERROR DISPLAY ===== */
+        #error-display {
+            display: none;
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(60,0,0,0.9);
+            color: #ff4444;
+            padding: 8px 16px;
+            font-size: 12px;
+            border: 1px solid #600;
+            z-index: 200;
+            max-width: 90%;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <!-- Rotate prompt (portrait mobile) -->
+    <div id="rotate-prompt">
+        <svg class="rotate-svg" width="80" height="80" viewBox="-4 -4 88 88" fill="none">
+            <path d="M10 62 A40 40 0 0 1 68 4" stroke="#cc0000" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+            <path d="M68 4 L62 12 M68 4 L60 2" stroke="#cc0000" stroke-width="2.5" stroke-linecap="round"/>
+            <g>
+                <rect x="26" y="12" width="28" height="48" rx="5" stroke="#cc0000" stroke-width="2.5" fill="rgba(204,0,0,0.05)"/>
+                <line x1="36" y1="53" x2="44" y2="53" stroke="#cc0000" stroke-width="2" stroke-linecap="round"/>
+            </g>
+        </svg>
+        <div>Rotate to Landscape</div>
+    </div>
+
+    <!-- CRT Monitor Frame -->
+    <div id="crt-frame">
+        <div id="screen-area">
+            <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+            <!-- Loading Screen -->
+            <div id="loading-screen">
+                <div class="doom-logo">VECTORDOOM</div>
+                <div class="loading-status" id="loading-status">INITIALIZING...</div>
+                <div class="loading-bar-outer">
+                    <div class="loading-bar-inner" id="loading-bar"></div>
+                </div>
+            </div>
+
+            <!-- Menu Overlay -->
+            <div id="menu-overlay">
+                <div class="menu-container">
+                    <div class="menu-title">VECTORDOOM</div>
+                    <div class="menu-subtitle" id="menu-subtitle">DEATHMATCH</div>
+
+                    <!-- Section: Game Mode (host only) -->
+                    <div class="screen-section active" id="section-mode">
+                        <div class="mode-label">Game Mode</div>
+                        <div class="toggle-group">
+                            <button class="doom-btn doom-btn-primary active" data-mode="deathmatch" id="btn-deathmatch">
+                                Deathmatch
+                            </button>
+                            <button class="doom-btn doom-btn-primary" data-mode="cooperative" id="btn-cooperative">
+                                Co-op
+                            </button>
+                        </div>
+                        <button class="doom-btn doom-btn-primary" id="btn-start">
+                            <span class="skull-indicator">&#9760;</span> Start Game
+                        </button>
+                    </div>
+
+                    <!-- Section: Waiting (client only) -->
+                    <div class="screen-section" id="section-waiting">
+                        <div class="waiting-msg" id="waiting-text">
+                            Waiting for host to start the game...
+                        </div>
+                    </div>
+
+                    <div class="menu-footer">
+                        <span id="footer-text" class="typewriter"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error display -->
+            <div id="error-display" id="error-text"></div>
         </div>
-        <script>
-            var commonArgs = ["-iwad", "doom1.wad", "-window", "-nogui", "-nomusic", "-config", "default.cfg", "-servername", "doomflare"];
+    </div>
 
-            var Module = {
-                onRuntimeInitialized: () => {
-                    callMain(commonArgs);
-                },
+    <!-- Networking layer: joins realtimeChannel + server election -->
+    <script src="webxdc-net.js"></script>
+
+    <script>
+    (function() {
+        'use strict';
+
+        // ===== DOM REFS =====
+        var loadingScreen = document.getElementById('loading-screen');
+        var loadingStatus = document.getElementById('loading-status');
+        var loadingBar = document.getElementById('loading-bar');
+        var menuOverlay = document.getElementById('menu-overlay');
+        var menuSubtitle = document.getElementById('menu-subtitle');
+        var footerText = document.getElementById('footer-text');
+        var errorDisplay = document.getElementById('error-display');
+
+        // Sections
+        var sectionMode = document.getElementById('section-mode');
+        var sectionWaiting = document.getElementById('section-waiting');
+
+        // Buttons
+        var btnDeathmatch = document.getElementById('btn-deathmatch');
+        var btnCooperative = document.getElementById('btn-cooperative');
+        var btnStart = document.getElementById('btn-start');
+
+        // ===== STATE =====
+        var isServer = false;
+        var gameMode = 'deathmatch';
+        var playerName = '';
+        var gameStarted = false;
+
+        // ===== PET NAME GENERATOR =====
+        var adjectives = [
+            'Raging', 'Silent', 'Brutal', 'Wicked', 'Feral',
+            'Cursed', 'Grim', 'Savage', 'Bloody', 'Vile',
+            'Iron', 'Toxic', 'Dark', 'Cyber', 'Ultra',
+            'Rapid', 'Ghost', 'Dire', 'Mad', 'Doom'
+        ];
+        var nouns = [
+            'Marine', 'Imp', 'Demon', 'Baron', 'Spectre',
+            'Skull', 'Cacodemon', 'Revenant', 'Archvile', 'Mancubus',
+            'Spider', 'Serpent', 'Slayer', 'Phantom', 'Fiend',
+            'Titan', 'Wraith', 'Stalker', 'Reaper', 'Hellknight'
+        ];
+
+        function genPetName() {
+            var a = adjectives[Math.floor(Math.random() * adjectives.length)];
+            var n = nouns[Math.floor(Math.random() * nouns.length)];
+            return a + ' ' + n;
+        }
+
+        // ===== LOADING PROGRESS =====
+        function setProgress(pct, msg) {
+            loadingBar.style.width = pct + '%';
+            if (msg) loadingStatus.textContent = msg;
+        }
+
+        // ===== TYPEWRITER FOOTER =====
+        var footerMessages = [
+            'RIP AND TEAR',
+            'KNEE DEEP IN THE DEAD',
+            'ULTRA-VIOLENCE',
+            'THEY ARE RAGE, BRUTAL, WITHOUT MERCY',
+            'YOU ARE THE DEMON SLAYER',
+            'HURT ME PLENTY'
+        ];
+        var footerIndex = 0;
+        var footerCharIndex = 0;
+        var footerTimer = null;
+
+        function typeNextFooter() {
+            var msg = footerMessages[footerIndex % footerMessages.length];
+            if (footerCharIndex <= msg.length) {
+                footerText.textContent = msg.substring(0, footerCharIndex);
+                footerCharIndex++;
+                footerTimer = setTimeout(typeNextFooter, 40 + Math.random() * 30);
+            } else {
+                // Pause, then start next message
+                footerTimer = setTimeout(function() {
+                    footerCharIndex = 0;
+                    footerIndex++;
+                    typeNextFooter();
+                }, 3000);
+            }
+        }
+
+        // ===== SECTION SWITCHING =====
+        function showSection(id) {
+            [sectionMode, sectionWaiting].forEach(function(s) {
+                s.classList.remove('active');
+            });
+            document.getElementById(id).classList.add('active');
+        }
+
+        // ===== SHOW ERROR =====
+        function showError(msg) {
+            errorDisplay.textContent = msg;
+            errorDisplay.style.display = 'block';
+            setTimeout(function() { errorDisplay.style.display = 'none'; }, 5000);
+        }
+        globalThis._vectorDoomUI = { showError: showError };
+
+        // ===== HIDE LOADING, SHOW MENU =====
+        function showMenu() {
+            loadingScreen.classList.add('hidden');
+            setTimeout(function() {
+                loadingScreen.style.display = 'none';
+            }, 500);
+
+            if (isServer) {
+                // Host: show game mode selection
+                menuOverlay.classList.add('visible');
+                showSection('section-mode');
+                typeNextFooter();
+            } else {
+                // Client: show brief waiting message then auto-launch
+                menuSubtitle.textContent = 'MULTIPLAYER';
+                menuOverlay.classList.add('visible');
+                showSection('section-waiting');
+                typeNextFooter();
+                setTimeout(launchDoom, 800);
+            }
+        }
+
+        // ===== LAUNCH DOOM =====
+        function launchDoom() {
+            if (gameStarted) return;
+            gameStarted = true;
+
+            menuOverlay.classList.remove('visible');
+
+            var args = [
+                '-iwad', 'doom1.wad',
+                '-window', '-nogui', '-nomusic',
+                '-config', 'default.cfg',
+                '-servername', 'vectordoom',
+                '-extratics', '3',
+                '-dup', '2'
+            ];
+
+            if (playerName) {
+                args.push('-pet');
+                args.push(playerName);
+            }
+
+            if (isServer) {
+                args.push('-server');
+                args.push('-privateserver');
+                if (gameMode === 'deathmatch') {
+                    args.push('-deathmatch');
+                }
+            } else {
+                args.push('-connect');
+                args.push('1');
+            }
+
+            console.log('VectorDoom: callMain with args:', args.join(' '));
+
+            // Focus canvas for keyboard input
+            var canvas = document.getElementById('canvas');
+            canvas.focus();
+
+            try {
+                Module.callMain(args);
+            } catch(e) {
+                console.error('VectorDoom: callMain error:', e);
+                showError('Engine error: ' + e.message);
+            }
+        }
+
+        // ===== BUTTON HANDLERS =====
+
+        // Game mode toggles
+        btnDeathmatch.addEventListener('click', function() {
+            gameMode = 'deathmatch';
+            btnDeathmatch.classList.add('active');
+            btnCooperative.classList.remove('active');
+        });
+        btnCooperative.addEventListener('click', function() {
+            gameMode = 'cooperative';
+            btnCooperative.classList.add('active');
+            btnDeathmatch.classList.remove('active');
+        });
+
+        // Start Game (host)
+        btnStart.addEventListener('click', function() {
+            launchDoom();
+        });
+
+        // ===== INITIALIZE =====
+
+        // Auto-resolve player name from WebXDC or random pet name
+        playerName = (globalThis.webxdc && webxdc.selfName) || genPetName();
+
+        // Start loading
+        setProgress(5, 'ELECTING SERVER...');
+
+        // Wait for server election
+        var electionP = globalThis._serverElectionP || Promise.resolve(true);
+
+        electionP.then(function(result) {
+            isServer = result;
+            setProgress(20, isServer ? 'YOU ARE THE HOST' : 'SERVER FOUND');
+
+            if (!isServer) {
+                menuSubtitle.textContent = 'MULTIPLAYER';
+            }
+
+            // Load the WASM engine
+            setProgress(30, 'LOADING ENGINE...');
+
+            window.Module = {
                 noInitialRun: true,
-                preRun: () => {
-                    Module.FS.createPreloadedFile("", "doom1.wad", "doom1.wad", true, true);
-                    Module.FS.createPreloadedFile("", "default.cfg", "default.cfg", true, true);
+                canvas: document.getElementById('canvas'),
+
+                preRun: [function() {
+                    setProgress(50, 'LOADING WAD...');
+                    Module.FS.createPreloadedFile('', 'doom1.wad', 'doom1.wad', true, true);
+                    Module.FS.createPreloadedFile('', 'default.cfg', 'default.cfg', true, true);
+                }],
+
+                print: function(text) {
+                    console.log(text);
                 },
-                printErr: function (text) {
-                    if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(" ");
+                printErr: function(text) {
                     console.error(text);
                 },
-                canvas: (function () {
-                    var canvas = document.getElementById("canvas");
-                    canvas.addEventListener(
-                        "webglcontextlost",
-                        function (e) {
-                            alert("WebGL context lost. You will need to reload the page.");
-                            e.preventDefault();
-                        },
-                        false
-                    );
-                    return canvas;
-                })(),
-                print: function (text) {
-                    console.log(text);
-                },
-                setStatus: function (text) {
-                    console.log(text);
+
+                setStatus: function(text) {
+                    if (text) {
+                        var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+                        if (m) {
+                            var pct = Math.round((parseFloat(m[2]) / parseFloat(m[4])) * 30) + 50;
+                            setProgress(Math.min(pct, 80), 'DOWNLOADING...');
+                        }
+                    }
                 },
                 totalDependencies: 0,
-                monitorRunDependencies: function (left) {
+                monitorRunDependencies: function(left) {
                     this.totalDependencies = Math.max(this.totalDependencies, left);
-                    Module.setStatus(left ? "Preparing... (" + (this.totalDependencies - left) + "/" + this.totalDependencies + ")" : "All downloads complete.");
-                },
+                    if (left === 0) {
+                        setProgress(90, 'READY');
+                        // Engine loaded — show menu after brief pause
+                        setTimeout(showMenu, 400);
+                    }
+                }
             };
 
-            window.onerror = function (event) {
-                Module.setStatus("Exception thrown, see JavaScript console");
-                Module.setStatus = function (text) {
-                    if (text) Module.printErr("[post-exception status] " + text);
-                };
+            // Dynamically load the WASM module
+            var script = document.createElement('script');
+            script.src = 'vector-doom.js';
+            script.onerror = function() {
+                setProgress(0, 'FAILED TO LOAD ENGINE');
+                showError('Could not load DOOM engine');
             };
-        </script>
-        <script type="text/javascript" src="websockets-doom.js"></script>
-    </body>
+            document.body.appendChild(script);
+        });
+
+        window.onerror = function(event) {
+            console.error('Error:', event);
+        };
+
+    })();
+    </script>
+</body>
 </html>

@@ -1,12 +1,12 @@
-AC_INIT(Websockets Doom, 0.0.1, celso@cloudflare.com, doom-ws-wasm)
+AC_INIT(Vector Doom, 0.0.1, mail@jskitty.cat, vectordoom)
 
 PACKAGE_SHORTNAME=${PACKAGE_NAME% Doom}
-PACKAGE_SHORTDESC="WASM WebSockets Chocolate Doom port"
-PACKAGE_COPYRIGHT="Copyright (C) 1993-2021"
+PACKAGE_SHORTDESC="DOOM Deathmatch WebXDC"
+PACKAGE_COPYRIGHT="Copyright (C) 1993-2026"
 PACKAGE_LICENSE="GNU General Public License, version 2"
-PACKAGE_MAINTAINER="Celso Martinho"
-PACKAGE_URL="https://github.com/cloudflare"
-PACKAGE_BUGREPORT="https://github.com/cloudflare"
+PACKAGE_MAINTAINER="JSKitty"
+PACKAGE_URL="https://github.com/JSKitty/VectorDoom"
+PACKAGE_BUGREPORT="https://github.com/JSKitty/VectorDoom"
 
 AC_CONFIG_AUX_DIR(autotools)
 AC_CANONICAL_HOST
@@ -115,10 +115,10 @@ AS_IF([test "x$with_libpng" != xno], [
 
 # TODO: We currently link everything against libraries that don't need it.
 # Use the specific library CFLAGS/LIBS variables instead of setting them here.
-EMFLAGS="-gsource-map -s INVOKE_RUN=1 -s USE_SDL=2 -s USE_SDL_MIXER=2 -s LEGACY_GL_EMULATION=0 -s USE_SDL_NET=2 -s ASSERTIONS=0 -s WASM=1 -s ALLOW_MEMORY_GROWTH=0 -s FORCE_FILESYSTEM=1 -s EXTRA_EXPORTED_RUNTIME_METHODS=[['FS','ccall']] -s SAFE_HEAP=1 -s EXIT_RUNTIME=1 -s STACK_OVERFLOW_CHECK=1 -s PROXY_POSIX_SOCKETS=0 -s USE_PTHREADS=0 -s PROXY_TO_PTHREAD=0 -s TOTAL_MEMORY=64MB -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s ASYNCIFY -O3 --source-map-base /"
+EMFLAGS="-s INVOKE_RUN=0 -s USE_SDL=2 -s USE_SDL_MIXER=2 -s LEGACY_GL_EMULATION=0 -s USE_SDL_NET=2 -s ASSERTIONS=0 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s FORCE_FILESYSTEM=1 -s EXPORTED_RUNTIME_METHODS=[['FS','ccall','callMain']] -s SAFE_HEAP=0 -s EXIT_RUNTIME=1 -s STACK_OVERFLOW_CHECK=1 -s PROXY_POSIX_SOCKETS=0 -s USE_PTHREADS=0 -s PROXY_TO_PTHREAD=0 -s TOTAL_MEMORY=64MB -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s ASYNCIFY -O3"
 
 CFLAGS="$CFLAGS $SDL_CFLAGS ${SAMPLERATE_CFLAGS:-} ${PNG_CFLAGS:-} $EMFLAGS"
-LDFLAGS="$LDFLAGS $SDL_LIBS ${SAMPLERATE_LIBS:-} ${PNG_LIBS:-} $EMFLAGS -lwebsocket.js"
+LDFLAGS="$LDFLAGS $SDL_LIBS ${SAMPLERATE_LIBS:-} ${PNG_LIBS:-} $EMFLAGS"
 
 AC_CHECK_LIB(m, log)
 

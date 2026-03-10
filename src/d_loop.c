@@ -40,7 +40,7 @@
 #include "net_loop.h"
 #include "net_query.h"
 #include "net_server.h"
-#include "net_websockets.h"
+#include "net_webxdc.h"
 #include "z_zone.h"
 
 uint32_t instanceUID;
@@ -54,9 +54,11 @@ typedef struct {
 
 // Maximum time that we wait in TryRunTics() for netgame data to be
 // received before we bail out and render a frame anyway.
-// Vanilla Doom used 20 for this value, but we use a smaller value
-// instead for better responsiveness of the menu when we're stuck.
-#define MAX_NETGAME_STALL_TICS 2
+// VectorDoom: set high for international P2P play over realtimeChannel.
+// With -dup 2, each tic unit is ~57ms, so 35 = ~2 second tolerance.
+// emscripten_sleep(1) in the wait loop yields to the browser event loop
+// so packets can arrive and the page stays responsive.
+#define MAX_NETGAME_STALL_TICS 35
 
 //
 // gametic is the tic about to (or currently being) run
@@ -421,7 +423,7 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
         instanceUID = 1;
         NET_SV_Init();
         NET_SV_AddModule(&net_loop_server_module);
-        NET_SV_AddModule(&net_websockets_module);
+        NET_SV_AddModule(&net_webxdc_module);
         net_loop_client_module.InitClient();
         addr = net_loop_client_module.ResolveAddress(NULL);
         NET_ReferenceAddress(addr);
@@ -442,8 +444,8 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
         i = M_CheckParmWithArgs("-connect", 1);
 
         if (i > 0) {
-            net_websockets_module.InitClient();
-            addr = net_websockets_module.ResolveAddress("1"); // server address is 1!
+            net_webxdc_module.InitClient();
+            addr = net_webxdc_module.ResolveAddress("1"); // server address is 1!
             NET_ReferenceAddress(addr);
         }
     }
