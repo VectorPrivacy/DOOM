@@ -12,6 +12,8 @@ What if multiplayer DOOM didn't need Cloudflare's servers -or anyone's servers? 
 
 That's what we built. We call it **Open-Source DOOM**.
 
+It's powered by a stack of open technologies: [Chocolate Doom](https://www.chocolate-doom.org/) compiled to [WebAssembly](https://webassembly.org/) via [Emscripten](https://emscripten.org/), distributed as a [WebXDC](https://webxdc.org/) mini-app, with peer discovery over [Nostr](https://nostr.com/), end-to-end encryption via [Marmot](https://github.com/parres-hq/mdk) (MLS over Nostr), and real-time P2P data transport through [Iroh](https://iroh.computer/) (QUIC-based gossip). Every layer is open-source. Every packet is encrypted. No servers required.
+
 ---
 
 ## What Cloudflare Built (And Why It's Great)
@@ -76,6 +78,8 @@ We replaced `net_websockets.c` with `net_webxdc.c` -a transport module that spea
 WebXDC is an open standard for sandboxed web apps distributed inside chat messages. The app has **zero internet access** -no fetch, no XMLHttpRequest, nothing. The only communication channel is `webxdc.joinRealtimeChannel()`, which gives you an unreliable broadcast pipe to other instances of the same .xdc file in the same chat.
 
 Under the hood (in our primary platform, [Vector](https://github.com/nicholasopuni31/vector)), this channel is backed by [Iroh](https://iroh.computer/) -a QUIC-based peer-to-peer gossip protocol. Messages travel directly between devices, relayed through lightweight Iroh relay nodes only when direct connections aren't possible. There are no game servers, no routing tables, no Durable Objects.
+
+Peer discovery happens over [Nostr](https://nostr.com/) -the decentralised social protocol. When you open a game, your Iroh node address is published as a Nostr event so other players can find you and establish a direct connection. The connection itself is encrypted end-to-end via [Marmot](https://github.com/parres-hq/mdk), which implements the [MLS](https://messaginglayersecurity.rocks/) (Messaging Layer Security) protocol over Nostr. So every packet of DOOM multiplayer data -every position snapshot, every damage event, every frag -is encrypted with forward secrecy before it ever leaves your device.
 
 The wire format is minimal:
 
