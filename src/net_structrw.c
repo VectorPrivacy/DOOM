@@ -81,6 +81,7 @@ void NET_WriteSettings(net_packet_t *packet, net_gamesettings_t *settings)
     NET_WriteInt8(packet, settings->random);
     NET_WriteInt8(packet, settings->num_players);
     NET_WriteInt8(packet, settings->consoleplayer);
+    NET_WriteInt32(packet, settings->start_tic);
 
     for (i = 0; i < settings->num_players; ++i)
     {
@@ -109,7 +110,8 @@ boolean NET_ReadSettings(net_packet_t *packet, net_gamesettings_t *settings)
            && NET_ReadSInt8(packet, (signed int *) &settings->loadgame)
            && NET_ReadInt8(packet, (unsigned int *) &settings->random)
            && NET_ReadInt8(packet, (unsigned int *) &settings->num_players)
-           && NET_ReadSInt8(packet, (signed int *) &settings->consoleplayer);
+           && NET_ReadSInt8(packet, (signed int *) &settings->consoleplayer)
+           && NET_ReadInt32(packet, (unsigned int *) &settings->start_tic);
 
     if (!success)
     {

@@ -101,6 +101,10 @@ extern  boolean         respawnmonsters;
 // Netgame? Only true if >1 player.
 extern  boolean	netgame;
 
+// True if this instance is a non-host client (has -connect flag).
+// Cached at startup to avoid repeated M_CheckParm scans in hot paths.
+extern  boolean net_client_player;
+
 // 0=Cooperative; 1=Deathmatch; 2=Altdeath
 extern int deathmatch;
 

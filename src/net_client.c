@@ -158,6 +158,13 @@ static unsigned int gamedata_recv_time;
 // that they can adjust to us.
 static int last_latency;
 
+// Ping/pong RTT measurement (separate from tic sync latency)
+static int ping_rtt = 0;           // smoothed RTT in milliseconds
+static unsigned int ping_send_time = 0;  // when we last sent a PING
+#define PING_INTERVAL_MS 2000       // send a ping every 2 seconds
+
+int NET_CL_GetLatency(void) { return ping_rtt; }
+
 // Hash checksums of our wad directory and dehacked data.
 
 sha1_digest_t net_local_wad_sha1sum;
@@ -551,7 +558,7 @@ static void NET_CL_ParseGameStart(net_packet_t *packet)
     // Clear the receive window
 
     memset(recvwindow, 0, sizeof(recvwindow));
-    recvwindow_start = 0;
+    recvwindow_start = settings.start_tic;  // 0 for normal, >0 for late join
     memset(&recvwindow_cmd_base, 0, sizeof(recvwindow_cmd_base));
 
     // Clear the send queue
@@ -830,6 +837,208 @@ static void NET_CL_ParseConsoleMessage(net_packet_t *packet)
     printf("Message from server:\n%s\n", msg);
 }
 
+// Send player state snapshot to server for desync correction
+
+void NET_CL_SendPlayerState(int player, int gametic, int *data) {
+    net_packet_t *packet;
+    int i;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(48);
+    NET_WriteInt16(packet, NET_PACKET_TYPE_PLAYER_STATE);
+    NET_WriteInt8(packet, player);
+    NET_WriteInt32(packet, gametic);
+    for (i = 0; i < 9; i++) NET_WriteInt32(packet, (unsigned int)data[i]);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+// Parse player state snapshot received from server (9 ints)
+
+extern void D_ApplyPlayerSnapshot(int player, int gametic_snap, int *data);
+
+static void NET_CL_ParsePlayerState(net_packet_t *packet) {
+    unsigned int player, tick;
+    int data[9], i;
+    if (!NET_ReadInt8(packet, &player)) return;
+    if (!NET_ReadInt32(packet, &tick)) return;
+    for (i = 0; i < 9; i++) {
+        if (!NET_ReadSInt32(packet, &data[i])) return;
+    }
+    if (player < NET_MAXPLAYERS) {
+        D_ApplyPlayerSnapshot(player, tick, data);
+    }
+}
+
+// Send host-authoritative health broadcast for all players
+
+void NET_CL_SendHealthAuth(int *data, int num_players) {
+    net_packet_t *packet;
+    int i;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(4 + num_players * 20);
+    NET_WriteInt16(packet, NET_PACKET_TYPE_HEALTH_AUTH);
+    NET_WriteInt8(packet, num_players);
+    for (i = 0; i < num_players * 5; i++) NET_WriteInt32(packet, (unsigned int)data[i]);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+// Parse host-authoritative health broadcast
+
+extern void D_ApplyHealthAuth(int *data);
+
+static void NET_CL_ParseHealthAuth(net_packet_t *packet) {
+    unsigned int num_players;
+    int data[NET_MAXPLAYERS * 5], i;
+    if (!NET_ReadInt8(packet, &num_players)) return;
+    if (num_players > NET_MAXPLAYERS) return;
+    for (i = 0; i < (int)num_players * 5; i++) {
+        if (!NET_ReadSInt32(packet, &data[i])) return;
+    }
+    D_ApplyHealthAuth(data);
+}
+
+// Send respawn request to host
+
+void NET_CL_SendRespawnRequest(int player) {
+    net_packet_t *packet;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(4);
+    NET_WriteInt16(packet, NET_PACKET_TYPE_RESPAWN_REQUEST);
+    NET_WriteInt8(packet, player);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+// Send damage event to host: "I (source) hit target for damage"
+
+void NET_CL_SendDamageEvent(int source_player, int target_player, int damage) {
+    net_packet_t *packet;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(8);
+    NET_WriteInt16(packet, NET_PACKET_TYPE_DAMAGE_EVENT);
+    NET_WriteInt8(packet, source_player);
+    NET_WriteInt8(packet, target_player);
+    NET_WriteInt16(packet, damage);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+void NET_CL_SendNPCState(unsigned char *data, int len) {
+    net_packet_t *packet;
+    int i;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(len + 4);
+    NET_WriteInt16(packet, NET_PACKET_TYPE_NPC_STATE);
+    for (i = 0; i < len; i++)
+        NET_WriteInt8(packet, data[i]);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+void NET_CL_SendNPCDamage(int source_player, unsigned short target_net_id, int damage) {
+    net_packet_t *packet;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(10);
+    NET_WriteInt16(packet, NET_PACKET_TYPE_NPC_DAMAGE);
+    NET_WriteInt8(packet, source_player);
+    NET_WriteInt16(packet, target_net_id);
+    NET_WriteInt16(packet, damage < 65535 ? damage : 65535);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+void NET_CL_SendUseEvent(int player) {
+    net_packet_t *packet;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(4);
+    NET_WriteInt16(packet, NET_PACKET_TYPE_USE_EVENT);
+    NET_WriteInt8(packet, player);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+void NET_CL_SendChatMessage(int player, const char *msg) {
+    net_packet_t *packet;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(4 + (int)strlen(msg));
+    NET_WriteInt16(packet, NET_PACKET_TYPE_CHAT_MSG);
+    NET_WriteInt8(packet, player);
+    NET_WriteString(packet, msg);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+void NET_CL_SendPlayerName(int player, const char *name) {
+    net_packet_t *packet;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(4 + (int)strlen(name));
+    NET_WriteInt16(packet, NET_PACKET_TYPE_PLAYER_NAME);
+    NET_WriteInt8(packet, player);
+    NET_WriteString(packet, name);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+static void NET_CL_ParseChatMessage(net_packet_t *packet) {
+    unsigned int player;
+    char *msg;
+    extern void D_HandleChatMessage(int player, const char *msg);
+    if (!NET_ReadInt8(packet, &player)) return;
+    msg = NET_ReadString(packet);
+    if (msg == NULL) return;
+    D_HandleChatMessage((int)player, msg);
+}
+
+static void NET_CL_ParsePlayerName(net_packet_t *packet) {
+    unsigned int player;
+    char *name;
+    extern void D_HandlePlayerName(int player, const char *name);
+    if (!NET_ReadInt8(packet, &player)) return;
+    name = NET_ReadString(packet);
+    if (name == NULL) return;
+    D_HandlePlayerName((int)player, name);
+}
+
+void NET_CL_SendKillMessage(const char *msg) {
+    net_packet_t *packet;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+    packet = NET_NewPacket(4 + (int)strlen(msg));
+    NET_WriteInt16(packet, NET_PACKET_TYPE_KILL_MSG);
+    NET_WriteString(packet, msg);
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+static void NET_CL_ParseKillMessage(net_packet_t *packet) {
+    char *msg;
+    extern void D_HandleKillMessage(const char *msg);
+    msg = NET_ReadString(packet);
+    if (msg == NULL) return;
+    D_HandleKillMessage(msg);
+}
+
+static void NET_CL_ParseNPCState(net_packet_t *packet) {
+    unsigned char buf[4000];
+    int len = 0;
+    unsigned int byte_val;
+    while (NET_ReadInt8(packet, &byte_val) && len < (int)sizeof(buf)) {
+        buf[len++] = (unsigned char)byte_val;
+    }
+    if (len > 0) {
+        extern void D_ApplyNPCState(unsigned char *data, int len);
+        D_ApplyNPCState(buf, len);
+    }
+}
+
+static void NET_CL_ParsePlayerJoined(net_packet_t *packet) {
+    unsigned int player;
+    extern void D_PlayerJoinedMidGame(int player);
+    if (!NET_ReadInt8(packet, &player)) return;
+    printf("Client: player %d joined mid-game\n", player);
+    D_PlayerJoinedMidGame(player);
+}
+
 // parse a received packet
 
 static void NET_CL_ParsePacket(net_packet_t *packet)
@@ -879,6 +1088,50 @@ static void NET_CL_ParsePacket(net_packet_t *packet)
         case NET_PACKET_TYPE_CONSOLE_MESSAGE:
             NET_CL_ParseConsoleMessage(packet);
             break;
+
+        case NET_PACKET_TYPE_PLAYER_STATE:
+            NET_CL_ParsePlayerState(packet);
+            break;
+
+        case NET_PACKET_TYPE_HEALTH_AUTH:
+            NET_CL_ParseHealthAuth(packet);
+            break;
+
+        case NET_PACKET_TYPE_NPC_STATE:
+            NET_CL_ParseNPCState(packet);
+            break;
+
+        case NET_PACKET_TYPE_CHAT_MSG:
+            NET_CL_ParseChatMessage(packet);
+            break;
+
+        case NET_PACKET_TYPE_PLAYER_NAME:
+            NET_CL_ParsePlayerName(packet);
+            break;
+
+        case NET_PACKET_TYPE_KILL_MSG:
+            NET_CL_ParseKillMessage(packet);
+            break;
+
+        case NET_PACKET_TYPE_PLAYER_JOINED:
+            NET_CL_ParsePlayerJoined(packet);
+            break;
+
+        case NET_PACKET_TYPE_PONG:
+        {
+            unsigned int send_ts;
+            if (NET_ReadInt32(packet, &send_ts)) {
+                int rtt = (int)(I_GetTimeMS() - send_ts);
+                if (rtt < 0) rtt = 0;
+                if (rtt > 9999) rtt = 9999;
+                // Exponential moving average: 70% old + 30% new
+                if (ping_rtt == 0)
+                    ping_rtt = rtt;
+                else
+                    ping_rtt = (ping_rtt * 7 + rtt * 3) / 10;
+            }
+            break;
+        }
 
         default:
             break;
@@ -931,6 +1184,19 @@ void NET_CL_Run(void)
         // Check if our resend requests have timed out
 
         NET_CL_CheckResends();
+
+        // Send periodic PING for RTT measurement
+        {
+            unsigned int now = I_GetTimeMS();
+            if (now - ping_send_time >= PING_INTERVAL_MS) {
+                net_packet_t *ping = NET_NewPacket(6);
+                NET_WriteInt16(ping, NET_PACKET_TYPE_PING);
+                NET_WriteInt32(ping, now);
+                NET_Conn_SendPacket(&client_connection, ping);
+                NET_FreePacket(ping);
+                ping_send_time = now;
+            }
+        }
     }
 }
 

@@ -31,6 +31,17 @@ void NET_CL_LaunchGame(void);
 void NET_CL_StartGame(net_gamesettings_t *settings);
 void NET_CL_SendTiccmd(ticcmd_t *ticcmd, int maketic);
 boolean NET_CL_GetSettings(net_gamesettings_t *_settings);
+void NET_CL_SendPlayerState(int player, int gametic, int *data);
+void NET_CL_SendHealthAuth(int *data, int num_players);
+void NET_CL_SendRespawnRequest(int player);
+void NET_CL_SendDamageEvent(int source_player, int target_player, int damage);
+void NET_CL_SendNPCState(unsigned char *data, int len);
+void NET_CL_SendNPCDamage(int source_player, unsigned short target_net_id, int damage);
+void NET_CL_SendUseEvent(int player);
+void NET_CL_SendChatMessage(int player, const char *msg);
+void NET_CL_SendPlayerName(int player, const char *name);
+void NET_CL_SendKillMessage(const char *msg);
+int NET_CL_GetLatency(void);
 void NET_Init(void);
 
 void NET_BindVariables(void);

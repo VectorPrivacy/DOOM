@@ -55,5 +55,17 @@ void HU_Erase(void);
 
 extern char *chat_macros[10];
 
+// Network player names (filled via name exchange packets)
+#define HU_MAXPLAYERNAME 32
+extern char net_player_names[4][HU_MAXPLAYERNAME];
+
+void HU_SetPlayerName(int player, const char *name);
+void HU_DisplayNetMessage(int player, const char *msg);
+void HU_DisplayKillMessage(const char *msg);
+void HU_DrawPlayerNames(void);
+void HU_DrawScoreboard(void);
+
+extern int player_pings[4];
+
 #endif
 

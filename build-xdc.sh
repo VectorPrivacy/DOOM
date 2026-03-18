@@ -19,6 +19,7 @@ cp src/webxdc-net.js _xdc_staging/webxdc-net.js
 cp src/index.html _xdc_staging/index.html
 cp src/doom1.wad _xdc_staging/doom1.wad
 cp src/default.cfg _xdc_staging/default.cfg
+cp src/bg.jpg _xdc_staging/bg.jpg
 cp manifest.toml _xdc_staging/manifest.toml
 
 # Create icon if it doesn't exist

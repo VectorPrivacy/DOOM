@@ -39,6 +39,14 @@
 
 #include "doomstat.h"
 
+#include "r_state.h"
+#include "r_main.h"
+#include "m_fixed.h"
+#include "v_video.h"
+#include "d_loop.h"
+#include "d_player.h"
+#include "net_client.h"
+
 // Data.
 #include "dstrings.h"
 #include "sounds.h"
@@ -73,6 +81,17 @@ const char *player_names[] =
     HUSTR_PLRRED
 };
 
+// Network player names: filled by name exchange packets.
+// Defaults to color names until real names arrive.
+// Initialized statically so D_CheckNetGame() name exchange isn't wiped by HU_Init().
+char net_player_names[4][HU_MAXPLAYERNAME] = {
+    "Green", "Indigo", "Brown", "Red"
+};
+int player_pings[4];
+static char net_player_prefixes[4][HU_MAXPLAYERNAME + 4] = {
+    "Green: ", "Indigo: ", "Brown: ", "Red: "
+};
+
 char			chat_char; // remove later.
 static player_t*	plr;
 patch_t*		hu_font[HU_FONTSIZE];
@@ -93,6 +112,38 @@ static int		message_counter;
 extern int		showMessages;
 
 static boolean		headsupactive = false;
+
+static const char *player_colors[] = { "Green", "Indigo", "Brown", "Red" };
+
+void HU_SetPlayerName(int player, const char *name) {
+    if (player < 0 || player >= 4) return;
+    M_StringCopy(net_player_names[player], name, HU_MAXPLAYERNAME);
+    // Chat prefix includes color for identification: "Name (Color): "
+    M_snprintf(net_player_prefixes[player], sizeof(net_player_prefixes[player]),
+               "%s (%s): ", name, player_colors[player]);
+    player_names[player] = net_player_prefixes[player];
+}
+
+void HU_DisplayNetMessage(int player, const char *msg) {
+    if (player < 0 || player >= 4) return;
+    HUlib_addMessageToSText(&w_message,
+                            DEH_String(player_names[player]),
+                            msg);
+    message_nottobefuckedwith = true;
+    message_on = true;
+    message_counter = HU_MSGTIMEOUT;
+    if (gamemode == commercial)
+        S_StartSound(0, sfx_radio);
+    else
+        S_StartSound(0, sfx_tink);
+}
+
+void HU_DisplayKillMessage(const char *msg) {
+    HUlib_addMessageToSText(&w_message, 0, msg);
+    message_nottobefuckedwith = true;
+    message_on = true;
+    message_counter = HU_MSGTIMEOUT;
+}
 
 //
 // Builtin map names.
@@ -432,6 +483,216 @@ void HU_Start(void)
 
 }
 
+#define NAMETAG_MINZ    (FRACUNIT*4)
+
+void HU_DrawPlayerNames(void)
+{
+    int i;
+
+    if (!netgame || deathmatch) return;
+
+    for (i = 0; i < MAXPLAYERS; i++)
+    {
+        fixed_t tr_x, tr_y, gxt, gyt, tz, tx;
+        fixed_t xscale, head_z, texturemid;
+        int screen_x, screen_y;
+        const char *name;
+        int name_width, j;
+        mobj_t *mo;
+        int c;
+
+        if (!playeringame[i] || i == consoleplayer) continue;
+        mo = players[i].mo;
+        if (!mo) continue;
+        if (players[i].playerstate != PST_LIVE) continue;
+
+        // Project player head position to screen
+        tr_x = mo->x - viewx;
+        tr_y = mo->y - viewy;
+
+        gxt = FixedMul(tr_x, viewcos);
+        gyt = -FixedMul(tr_y, viewsin);
+        tz = gxt - gyt;
+
+        if (tz < NAMETAG_MINZ) continue;
+
+        xscale = FixedDiv(projection, tz);
+
+        gxt = -FixedMul(tr_x, viewsin);
+        gyt = FixedMul(tr_y, viewcos);
+        tx = -(gyt + gxt);
+
+        // Too far off the side
+        if (abs(tx) > (tz << 2)) continue;
+
+        screen_x = (centerxfrac + FixedMul(tx, xscale)) >> FRACBITS;
+
+        // Y position: top of player sprite + offset above head
+        head_z = mo->z + mo->height + (12 << FRACBITS);
+        texturemid = head_z - viewz;
+        screen_y = (centeryfrac - FixedMul(texturemid, xscale)) >> FRACBITS;
+
+        // Bounds check: ensure font fits vertically
+        {
+            int font_h = SHORT(hu_font[0]->height);
+            if (screen_y < 0 || screen_y + font_h > SCREENHEIGHT) continue;
+        }
+
+        // Get name and calculate pixel width (static size)
+        name = net_player_names[i];
+        name_width = 0;
+        for (j = 0; name[j]; j++)
+        {
+            c = toupper((unsigned char)name[j]);
+            if (c >= HU_FONTSTART && c <= HU_FONTEND)
+                name_width += SHORT(hu_font[c - HU_FONTSTART]->width);
+            else
+                name_width += 4;
+        }
+
+        // Center horizontally
+        screen_x -= name_width / 2;
+
+        // Skip if entire name is off-screen
+        if (screen_x + name_width <= 0 || screen_x >= SCREENWIDTH) continue;
+
+        // Draw each character at native size, skipping out-of-bounds chars
+        for (j = 0; name[j]; j++)
+        {
+            c = toupper((unsigned char)name[j]);
+            if (c >= HU_FONTSTART && c <= HU_FONTEND)
+            {
+                patch_t *p = hu_font[c - HU_FONTSTART];
+                int pw = SHORT(p->width);
+                if (screen_x >= 0 && screen_x + pw <= SCREENWIDTH)
+                    V_DrawPatch(screen_x, screen_y, p);
+                screen_x += pw;
+            }
+            else
+            {
+                screen_x += 4;
+            }
+        }
+    }
+}
+
+// Draw a string at (x, y) using HUD font. Returns the x position after drawing.
+static int HU_DrawString(int x, int y, const char *str)
+{
+    int c;
+    for (; *str; str++)
+    {
+        c = toupper((unsigned char)*str);
+        if (c >= HU_FONTSTART && c <= HU_FONTEND)
+        {
+            patch_t *p = hu_font[c - HU_FONTSTART];
+            int pw = SHORT(p->width);
+            if (x >= 0 && x + pw <= SCREENWIDTH
+                && y >= 0 && y + SHORT(p->height) <= SCREENHEIGHT)
+                V_DrawPatch(x, y, p);
+            x += pw;
+        }
+        else
+        {
+            x += 4;
+        }
+    }
+    return x;
+}
+
+// Draw a right-aligned string ending at x_right.
+static void HU_DrawStringRight(int x_right, int y, const char *str)
+{
+    int width = 0, c;
+    const char *s;
+    for (s = str; *s; s++)
+    {
+        c = toupper((unsigned char)*s);
+        if (c >= HU_FONTSTART && c <= HU_FONTEND)
+            width += SHORT(hu_font[c - HU_FONTSTART]->width);
+        else
+            width += 4;
+    }
+    HU_DrawString(x_right - width, y, str);
+}
+
+#define SB_X       4
+#define SB_Y       4
+#define SB_PAD     2
+#define SB_COL_PING  160
+#define SB_COL_SCORE 210
+#define SB_WIDTH   240
+#define SB_BG_COLOR 0  // palette index for black
+
+void HU_DrawScoreboard(void)
+{
+    int i, y, row_h, num_rows, total_h;
+    char buf[64];
+
+    if (!automapactive || !netgame) return;
+
+    row_h = SHORT(hu_font[0]->height) + SB_PAD;
+
+    // Count active players for box sizing
+    num_rows = 1; // header
+    for (i = 0; i < MAXPLAYERS; i++)
+        if (playeringame[i]) num_rows++;
+
+    total_h = num_rows * row_h + SB_PAD * 2;
+
+    // Draw dark background
+    V_DrawFilledBox(SB_X, SB_Y, SB_WIDTH, total_h, SB_BG_COLOR);
+
+    y = SB_Y + SB_PAD;
+
+    // Header
+    HU_DrawString(SB_X + SB_PAD, y, "PLAYER");
+    HU_DrawStringRight(SB_X + SB_COL_PING, y, "PING");
+    HU_DrawStringRight(SB_X + SB_COL_SCORE, y,
+                       deathmatch ? "FRAGS" : "KILLS");
+    y += row_h;
+
+    // Player rows
+    for (i = 0; i < MAXPLAYERS; i++)
+    {
+        int ping, score, j;
+
+        if (!playeringame[i]) continue;
+
+        // Name
+        if (i == consoleplayer)
+        {
+            M_snprintf(buf, sizeof(buf), "%s (YOU)", net_player_names[i]);
+            HU_DrawString(SB_X + SB_PAD, y, buf);
+        }
+        else
+        {
+            HU_DrawString(SB_X + SB_PAD, y, net_player_names[i]);
+        }
+
+        // Ping (local player uses fresh value)
+        ping = (i == consoleplayer) ? NET_CL_GetLatency() : player_pings[i];
+        M_snprintf(buf, sizeof(buf), "%dMS", ping);
+        HU_DrawStringRight(SB_X + SB_COL_PING, y, buf);
+
+        // Score
+        if (deathmatch)
+        {
+            score = 0;
+            for (j = 0; j < MAXPLAYERS; j++)
+                if (j != i) score += players[i].frags[j];
+        }
+        else
+        {
+            score = players[i].killcount;
+        }
+        M_snprintf(buf, sizeof(buf), "%d", score);
+        HU_DrawStringRight(SB_X + SB_COL_SCORE, y, buf);
+
+        y += row_h;
+    }
+}
+
 void HU_Drawer(void)
 {
 
@@ -439,6 +700,8 @@ void HU_Drawer(void)
     HUlib_drawIText(&w_chat);
     if (automapactive)
 	HUlib_drawTextLine(&w_title, false);
+    HU_DrawPlayerNames();
+    HU_DrawScoreboard();
 
 }
 
@@ -694,6 +957,9 @@ boolean HU_Responder(event_t *ev)
                 {
                     M_StringCopy(lastmessage, w_chat.l.l, sizeof(lastmessage));
                     plr->message = lastmessage;
+                    // Send full message over network (bypasses broken ticcmd chatchar)
+                    if (netgame)
+                        D_SendChatMessage(consoleplayer, w_chat.l.l);
                 }
 	    }
 	    else if (c == KEY_ESCAPE)

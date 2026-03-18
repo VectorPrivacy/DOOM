@@ -46,6 +46,29 @@ typedef struct
     // Run the menu (runs independently of the game).
 
     void (*RunMenu)();
+
+    // Position snapshot callbacks for desync correction (7 ints: x,y,z,angle,momx,momy,momz)
+    void (*BuildPlayerSnapshot)(int player, int *data);
+    void (*ApplyPlayerSnapshot)(int player, int *data);
+
+    // Host-authoritative health broadcast (MAXPLAYERS * 2 ints: health + playerstate per player)
+    void (*BuildHealthAuth)(int *data);
+    void (*ApplyHealthAuth)(int localplayer, int *data);
+
+    // Host handles a respawn request from a client
+    void (*HandleRespawnRequest)(int player);
+
+    // Host handles a damage event from a client
+    void (*HandleDamageEvent)(int source_player, int target_player, int damage);
+
+    // Host handles an NPC damage event from a client
+    void (*HandleNPCDamageEvent)(int source_player, unsigned short target_net_id, int damage);
+
+    // Host handles a USE event from a client (door/switch interaction)
+    void (*HandleUseEvent)(int player);
+
+    // A new player joined mid-game (late join)
+    void (*PlayerJoined)(int player);
 } loop_interface_t;
 
 // Register callback functions for the main loop code to use.
@@ -76,6 +99,47 @@ void D_StartNetGame(net_gamesettings_t *settings,
 
 extern boolean singletics;
 extern int gametic, ticdup;
+
+// Position snapshot bridge functions
+void D_BuildAndSendSnapshot(void);
+void D_ApplyPlayerSnapshot(int player, int gametic_snap, int *data);
+
+// Host-authoritative health broadcast
+void D_BuildAndSendHealthAuth(void);
+void D_ApplyHealthAuth(int *data);
+
+// Respawn request handling
+void D_HandleRespawnRequest(int player);
+void D_SendRespawnRequest(void);
+
+// Client damage event: client reports hitting a player to the host
+void D_SendDamageEvent(int source_player, int target_player, int damage);
+void D_HandleDamageEvent(int source_player, int target_player, int damage);
+
+// NPC sync: host broadcasts state, clients apply; clients report NPC hits
+void D_BuildAndSendNPCState(void);
+void D_ApplyNPCState(unsigned char *data, int len);
+void D_SendNPCDamageEvent(int source_player, unsigned short target_net_id, int damage);
+void D_HandleNPCDamageEvent(int source_player, unsigned short target_net_id, int damage);
+
+// USE event: client reports pressing USE to host (doors, switches)
+void D_SendUseEvent(int player);
+void D_HandleUseEvent(int player);
+
+// Chat messages: bypass ticcmd system, sent as full messages
+void D_SendChatMessage(int player, const char *msg);
+void D_HandleChatMessage(int player, const char *msg);
+
+// Kill messages: host broadcasts kill notifications
+void D_SendKillMessage(const char *msg);
+void D_HandleKillMessage(const char *msg);
+
+// Player name exchange: broadcast names after game starts
+void D_SendPlayerName(int player, const char *name);
+void D_HandlePlayerName(int player, const char *name);
+
+// Mid-game join: activate a new player during a running game
+void D_PlayerJoinedMidGame(int player);
 
 // Check if it is permitted to record a demo with a non-vanilla feature.
 boolean D_NonVanillaRecord(boolean conditional, const char *feature);

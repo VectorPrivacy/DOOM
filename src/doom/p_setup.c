@@ -38,6 +38,7 @@
 #include "p_local.h"
 
 #include "s_sound.h"
+#include "p_netsync.h"
 
 #include "doomstat.h"
 
@@ -828,6 +829,7 @@ P_SetupLevel
     P_LoadBlockMap (lumpnum+ML_BLOCKMAP);
     P_LoadVertexes (lumpnum+ML_VERTEXES);
     P_LoadSectors (lumpnum+ML_SECTORS);
+    P_NetStoreSectorHeights();
     P_LoadSideDefs (lumpnum+ML_SIDEDEFS);
 
     P_LoadLineDefs (lumpnum+ML_LINEDEFS);
@@ -840,6 +842,7 @@ P_SetupLevel
 
     bodyqueslot = 0;
     deathmatch_p = deathmatchstarts;
+    P_NetResetIds();
     P_LoadThings (lumpnum+ML_THINGS);
     
     // if deathmatch, randomly spawn the active players

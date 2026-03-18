@@ -25,6 +25,7 @@
 #include "d_event.h"
 
 #include "p_local.h"
+#include "d_loop.h"
 
 #include "doomstat.h"
 
@@ -99,7 +100,7 @@ void P_CalcHeight (player_t* player)
     }
 		
     angle = (FINEANGLES/20*leveltime)&FINEMASK;
-    bob = FixedMul ( player->bob/2, finesine[angle]);
+    bob = FixedMul ( player->bob/8, finesine[angle]);
 
     
     // move viewheight
@@ -218,7 +219,20 @@ void P_DeathThink (player_t* player)
 	
 
     if (player->cmd.buttons & BT_USE)
-	player->playerstate = PST_REBORN;
+    {
+	if (netgame && player == &players[consoleplayer]
+	    && net_client_player)
+	{
+	    // Non-host client: send respawn request to host.
+	    // Don't locally set PST_REBORN — wait for host authority.
+	    D_SendRespawnRequest();
+	}
+	else
+	{
+	    // Host or single-player: respawn locally (host is authoritative)
+	    player->playerstate = PST_REBORN;
+	}
+    }
 }
 
 
@@ -318,6 +332,13 @@ void P_PlayerThink (player_t* player)
 	{
 	    P_UseLines (player);
 	    player->usedown = true;
+
+	    // Report to host if we're a client so doors/switches sync
+	    if (netgame && net_client_player
+	        && player == &players[consoleplayer])
+	    {
+	        D_SendUseEvent(consoleplayer);
+	    }
 	}
     }
     else

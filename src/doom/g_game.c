@@ -115,6 +115,7 @@ boolean viewactive;
 
 int deathmatch;  // only if started as net death
 boolean netgame; // only true if packets are broadcast
+boolean net_client_player; // true if non-host client (-connect)
 boolean playeringame[MAXPLAYERS];
 player_t players[MAXPLAYERS];
 
@@ -818,7 +819,8 @@ void G_Ticker(void)
 
             if (netgame && !netdemo && !(gametic % ticdup)) {
                 if (gametic > BACKUPTICS && consistancy[i][buf] != cmd->consistancy) {
-                    I_Error("consistency failure (%i should be %i)", cmd->consistancy, consistancy[i][buf]);
+                    printf("consistency warning: player %d tic %d (%i vs %i)\n",
+                           i, gametic, cmd->consistancy, consistancy[i][buf]);
                 }
                 if (players[i].mo)
                     consistancy[i][buf] = players[i].mo->x;
@@ -1097,8 +1099,10 @@ void G_DoReborn(int playernum)
     else {
         // respawn at the start
 
-        // first dissasociate the corpse
-        players[playernum].mo->player = NULL;
+        // first dissasociate the corpse (may be NULL for mid-game joins)
+        if (players[playernum].mo) {
+            players[playernum].mo->player = NULL;
+        }
 
         // spawn at random spot if in death match
         if (deathmatch) {

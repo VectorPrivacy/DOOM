@@ -26,7 +26,7 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
-            background: #000;
+            background: #000 url('bg.jpg') center center / cover no-repeat fixed;
             color: var(--doom-text);
             font-family: 'Courier New', 'Lucida Console', monospace;
             height: 100vh;
@@ -68,18 +68,24 @@
         /* ===== CRT MONITOR FRAME ===== */
         #crt-frame {
             position: relative;
-            width: min(96vw, calc((96vh - 40px) * 1.4));
-            width: min(96vw, calc((96dvh - 40px) * 1.4));
+            width: min(94vw, calc(82vh * 4 / 3));
+            width: min(94vw, calc(82dvh * 4 / 3));
             aspect-ratio: 4 / 3;
             background: #1a1a1a;
             border-radius: 18px;
             padding: 16px;
             box-shadow:
+                0 0 20px rgba(89, 252, 179, 0.35),
+                0 0 6px rgba(89, 252, 179, 0.25),
+                0 10px 80px rgba(0, 0, 0, 1),
+                0 0 150px rgba(0, 0, 0, 1),
+                0 0 300px rgba(0, 0, 0, 0.8),
+                0 0 500px rgba(0, 0, 0, 0.5),
                 0 0 60px rgba(204, 68, 0, 0.15),
                 0 0 120px rgba(204, 68, 0, 0.05),
                 inset 0 2px 0 rgba(255,255,255,0.08),
                 inset 0 -2px 0 rgba(0,0,0,0.5);
-            border: 2px solid #2a2a2a;
+            border: 2px solid #59fcb3;
         }
 
         /* Monitor bezel details */
@@ -277,6 +283,9 @@
             position: relative;
             text-align: center;
             user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
             transition: filter 0.05s;
         }
 
@@ -426,6 +435,229 @@
             max-width: 90%;
             text-align: center;
         }
+
+        /* ===== MOBILE: HIDE CRT FRAME IN LANDSCAPE ===== */
+        @media (pointer: coarse) and (orientation: landscape) {
+            body { background: #000; }
+            #crt-frame {
+                padding: 0 !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                background: #000 !important;
+                border: none !important;
+                width: 100vw !important;
+                height: 100vh !important;
+                height: 100dvh !important;
+                max-width: none !important;
+                aspect-ratio: auto !important;
+            }
+            #crt-frame::before, #crt-frame::after { display: none !important; }
+            #screen-area {
+                border-radius: 0 !important;
+                border: none !important;
+                box-shadow: none !important;
+            }
+            #screen-area::after { display: none !important; }
+        }
+
+        /* ===== MOBILE TOUCH CONTROLS ===== */
+        #touch-controls {
+            display: none;
+            position: absolute;
+            inset: 0;
+            z-index: 100;
+            pointer-events: none;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #touch-controls.active {
+            display: block;
+        }
+
+        /* Joystick */
+        .touch-joy-base {
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 2px solid rgba(204, 68, 0, 0.35);
+            background: rgba(0, 0, 0, 0.15);
+            pointer-events: none;
+            display: none;
+        }
+        .touch-joy-base.visible { display: block; }
+        .touch-joy-knob {
+            position: absolute;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: rgba(204, 68, 0, 0.3);
+            border: 2px solid rgba(204, 68, 0, 0.5);
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+
+        /* Touch zones (invisible hit areas) */
+        .touch-zone-left {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 40%;
+            height: 100%;
+            pointer-events: auto;
+            touch-action: none;
+        }
+        .touch-zone-right {
+            position: absolute;
+            right: 0;
+            top: 0;
+            width: 60%;
+            height: 100%;
+            pointer-events: auto;
+            touch-action: none;
+        }
+
+        /* Action buttons */
+        .touch-btn {
+            position: absolute;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            text-transform: uppercase;
+            pointer-events: auto;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+        }
+        .touch-btn-fire {
+            right: 16px;
+            bottom: 56px;
+            width: 70px;
+            height: 70px;
+            font-size: 13px;
+            background: rgba(179, 0, 0, 0.4);
+            border: 2px solid rgba(255, 68, 68, 0.5);
+            color: rgba(255, 100, 100, 0.9);
+        }
+        .touch-btn-fire.pressed {
+            background: rgba(179, 0, 0, 0.7);
+            border-color: rgba(255, 68, 68, 0.8);
+        }
+        .touch-btn-use {
+            right: 20px;
+            bottom: 140px;
+            width: 55px;
+            height: 55px;
+            font-size: 11px;
+            background: rgba(80, 80, 80, 0.3);
+            border: 2px solid rgba(150, 150, 150, 0.35);
+            color: rgba(200, 200, 200, 0.8);
+        }
+        .touch-btn-use.pressed {
+            background: rgba(80, 80, 80, 0.6);
+            border-color: rgba(150, 150, 150, 0.6);
+        }
+        .touch-btn-map {
+            left: 16px;
+            top: 16px;
+            width: 45px;
+            height: 45px;
+            font-size: 10px;
+            background: rgba(80, 80, 80, 0.25);
+            border: 2px solid rgba(150, 150, 150, 0.3);
+            color: rgba(200, 200, 200, 0.7);
+        }
+        .touch-btn-map.pressed {
+            background: rgba(80, 80, 80, 0.5);
+            border-color: rgba(150, 150, 150, 0.5);
+        }
+        .touch-btn-wpn {
+            top: 16px;
+            width: 40px;
+            height: 40px;
+            font-size: 16px;
+            background: rgba(80, 80, 80, 0.2);
+            border: 2px solid rgba(150, 150, 150, 0.25);
+            color: rgba(200, 200, 200, 0.7);
+            border-radius: 8px;
+        }
+        .touch-btn-wpn.pressed {
+            background: rgba(80, 80, 80, 0.5);
+            border-color: rgba(150, 150, 150, 0.5);
+        }
+        .touch-btn-wpn-prev { right: 100px; }
+        .touch-btn-wpn-num {
+            position: absolute;
+            top: 16px;
+            right: 56px;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Courier New', monospace;
+            font-size: 18px;
+            font-weight: bold;
+            color: rgba(204, 68, 0, 0.8);
+            pointer-events: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .touch-btn-wpn-next { right: 16px; }
+
+        /* Mobile PLAY button (lobby → in-game transition) */
+        #mobile-play-overlay {
+            display: none;
+            position: absolute;
+            inset: 0;
+            z-index: 200;
+            align-items: flex-end;
+            justify-content: center;
+            padding-bottom: 32px;
+            background: rgba(0, 0, 0, 0.5);
+            touch-action: manipulation;
+        }
+        #mobile-play-overlay.visible { display: flex; }
+        #mobile-play-btn {
+            padding: 18px 48px;
+            font-family: 'Courier New', monospace;
+            font-size: 22px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            color: #fff;
+            background: var(--doom-red);
+            border-top: 3px solid #ff4444;
+            border-left: 3px solid #ff4444;
+            border-right: 3px solid #500;
+            border-bottom: 3px solid #300;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.6);
+            box-shadow: 0 0 30px rgba(179,0,0,0.5);
+            cursor: pointer;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+            animation: play-pulse 2s ease-in-out infinite;
+        }
+        #mobile-play-btn:active {
+            background: #900;
+            border-top: 3px solid #500;
+            border-left: 3px solid #500;
+            border-right: 3px solid #ff4444;
+            border-bottom: 3px solid #ff4444;
+        }
+        @keyframes play-pulse {
+            0%, 100% { box-shadow: 0 0 20px rgba(179,0,0,0.4); }
+            50% { box-shadow: 0 0 40px rgba(179,0,0,0.7); }
+        }
     </style>
 </head>
 <body>
@@ -493,6 +725,29 @@
 
             <!-- Error display -->
             <div id="error-display" id="error-text"></div>
+
+            <!-- Mobile PLAY button (lobby → game transition on touch devices) -->
+            <div id="mobile-play-overlay">
+                <div id="mobile-play-btn">&#9760; PLAY</div>
+            </div>
+
+            <!-- Mobile touch controls (hidden until game starts on touch device) -->
+            <div id="touch-controls">
+                <div class="touch-zone-left" id="touch-zone-left"></div>
+                <div class="touch-zone-right" id="touch-zone-right"></div>
+                <div class="touch-joy-base" id="joy-base">
+                    <div class="touch-joy-knob" id="joy-knob"></div>
+                </div>
+                <div class="touch-joy-base" id="look-base">
+                    <div class="touch-joy-knob" id="look-knob"></div>
+                </div>
+                <div class="touch-btn touch-btn-fire" id="btn-fire">FIRE</div>
+                <div class="touch-btn touch-btn-use" id="btn-use">USE</div>
+                <div class="touch-btn touch-btn-map" id="btn-map">MAP</div>
+                <div class="touch-btn touch-btn-wpn touch-btn-wpn-prev" id="btn-wpn-prev">&#9664;</div>
+                <div class="touch-btn-wpn-num" id="wpn-num">1</div>
+                <div class="touch-btn touch-btn-wpn touch-btn-wpn-next" id="btn-wpn-next">&#9654;</div>
+            </div>
         </div>
     </div>
 
@@ -526,6 +781,7 @@
         var gameMode = 'deathmatch';
         var playerName = '';
         var gameStarted = false;
+        var isTouchDevice = ('ontouchstart' in window) && navigator.maxTouchPoints > 0;
 
         // ===== PET NAME GENERATOR =====
         var adjectives = [
@@ -632,8 +888,7 @@
                 '-window', '-nogui', '-nomusic',
                 '-config', 'default.cfg',
                 '-servername', 'vectordoom',
-                '-extratics', '3',
-                '-dup', '2'
+                '-extratics', '1'
             ];
 
             if (playerName) {
@@ -660,6 +915,11 @@
 
             try {
                 Module.callMain(args);
+                setupGamepad();
+                if (isTouchDevice) {
+                    // Show the PLAY button so user can start when ready
+                    setTimeout(showMobilePlayButton, 600);
+                }
             } catch(e) {
                 console.error('VectorDoom: callMain error:', e);
                 showError('Engine error: ' + e.message);
@@ -669,21 +929,24 @@
         // ===== BUTTON HANDLERS =====
 
         // Game mode toggles
-        btnDeathmatch.addEventListener('click', function() {
+        function selectDeathmatch() {
             gameMode = 'deathmatch';
             btnDeathmatch.classList.add('active');
             btnCooperative.classList.remove('active');
-        });
-        btnCooperative.addEventListener('click', function() {
+        }
+        function selectCooperative() {
             gameMode = 'cooperative';
             btnCooperative.classList.add('active');
             btnDeathmatch.classList.remove('active');
-        });
+        }
+        btnDeathmatch.addEventListener('click', selectDeathmatch);
+        btnCooperative.addEventListener('click', selectCooperative);
+        btnDeathmatch.addEventListener('touchend', function(e) { e.preventDefault(); selectDeathmatch(); });
+        btnCooperative.addEventListener('touchend', function(e) { e.preventDefault(); selectCooperative(); });
 
         // Start Game (host)
-        btnStart.addEventListener('click', function() {
-            launchDoom();
-        });
+        btnStart.addEventListener('click', function() { launchDoom(); });
+        btnStart.addEventListener('touchend', function(e) { e.preventDefault(); launchDoom(); });
 
         // ===== INITIALIZE =====
 
@@ -757,6 +1020,511 @@
         window.onerror = function(event) {
             console.error('Error:', event);
         };
+
+        // ===== MOBILE PLAY BUTTON =====
+        function showMobilePlayButton() {
+            var overlay = document.getElementById('mobile-play-overlay');
+            var btn = document.getElementById('mobile-play-btn');
+            overlay.classList.add('visible');
+
+            function startPlaying(e) {
+                if (e) e.preventDefault();
+                overlay.classList.remove('visible');
+                // Simulate a real Space keypress via DOM event (goes through SDL's pipeline)
+                function simulateKey(code, keyStr) {
+                    var canvas = document.getElementById('canvas');
+                    var target = canvas || document;
+                    var down = new KeyboardEvent('keydown', {
+                        key: keyStr, code: code, keyCode: 32, which: 32, bubbles: true, cancelable: true
+                    });
+                    var up = new KeyboardEvent('keyup', {
+                        key: keyStr, code: code, keyCode: 32, which: 32, bubbles: true, cancelable: true
+                    });
+                    target.dispatchEvent(down);
+                    setTimeout(function() { target.dispatchEvent(up); }, 80);
+                }
+                simulateKey('Space', ' ');
+                // Show touch controls for gameplay
+                setTimeout(setupMobileControls, 500);
+            }
+
+            btn.addEventListener('touchstart', startPlaying, { passive: false, once: true });
+            btn.addEventListener('click', startPlaying, { once: true });
+        }
+
+        // ===== GAMEPAD CONTROLLER SUPPORT =====
+        function setupGamepad() {
+            // State tracking for change detection
+            var gpState = {
+                up: false, down: false, left: false, right: false,
+                fire: false, use: false, map: false, run: false,
+                lookDx: 0,
+                weaponSlot: 2,
+                lastWeaponSwitch: 0
+            };
+
+            var K_UP = 0xad, K_DOWN = 0xaf;
+            var K_STRAFE_L = 97, K_STRAFE_R = 100;
+            var K_RSHIFT = 0xb6;
+            var K_FIRE = 32, K_USE = 101, K_TAB = 9;
+            var EV_DOWN = 0, EV_UP = 1;
+            var DEADZONE = 0.25;
+            var LOOK_DEADZONE = 0.15;
+            var TRIGGER_THRESHOLD = 0.3;
+            var WEAPON_DEBOUNCE = 250;  // ms
+            var LOOK_SENSITIVITY = 75;  // pixels at full tilt (~60fps, matches mobile 150px@30fps)
+
+            var inject = Module._inject_key_event;
+            var injectMouse = Module._inject_mouse_motion;
+
+            function gpSetKey(name, code, pressed) {
+                if (gpState[name] === pressed) return;
+                gpState[name] = pressed;
+                inject(pressed ? EV_DOWN : EV_UP, code);
+            }
+
+            function processGamepad(gp) {
+                // --- Left stick: movement ---
+                var lx = gp.axes[0] || 0;
+                var ly = gp.axes[1] || 0;
+                var lDist = Math.sqrt(lx * lx + ly * ly);
+
+                if (lDist < DEADZONE) {
+                    gpSetKey('up', K_UP, false);
+                    gpSetKey('down', K_DOWN, false);
+                    gpSetKey('left', K_STRAFE_L, false);
+                    gpSetKey('right', K_STRAFE_R, false);
+                    gpSetKey('run', K_RSHIFT, false);
+                } else {
+                    var nx = lx / lDist;
+                    var ny = ly / lDist;
+
+                    // Auto-run when stick is pushed far
+                    gpSetKey('run', K_RSHIFT, lDist > 0.7);
+
+                    if (ny < -0.4) { gpSetKey('up', K_UP, true); gpSetKey('down', K_DOWN, false); }
+                    else if (ny > 0.4) { gpSetKey('down', K_DOWN, true); gpSetKey('up', K_UP, false); }
+                    else { gpSetKey('up', K_UP, false); gpSetKey('down', K_DOWN, false); }
+
+                    if (nx < -0.4) { gpSetKey('left', K_STRAFE_L, true); gpSetKey('right', K_STRAFE_R, false); }
+                    else if (nx > 0.4) { gpSetKey('right', K_STRAFE_R, true); gpSetKey('left', K_STRAFE_L, false); }
+                    else { gpSetKey('left', K_STRAFE_L, false); gpSetKey('right', K_STRAFE_R, false); }
+                }
+
+                // --- D-pad: alternative movement (only when left stick is idle) ---
+                if (lDist < DEADZONE) {
+                    if (gp.buttons[12] && gp.buttons[12].pressed) gpSetKey('up', K_UP, true);
+                    if (gp.buttons[13] && gp.buttons[13].pressed) gpSetKey('down', K_DOWN, true);
+                    if (gp.buttons[14] && gp.buttons[14].pressed) gpSetKey('left', K_STRAFE_L, true);
+                    if (gp.buttons[15] && gp.buttons[15].pressed) gpSetKey('right', K_STRAFE_R, true);
+                }
+
+                // --- Right stick: turning ---
+                var rx = gp.axes[2] || 0;
+                if (Math.abs(rx) > LOOK_DEADZONE) {
+                    var turnPx = Math.round(rx * LOOK_SENSITIVITY);
+                    injectMouse(turnPx, 0);
+                }
+
+                // --- R2 trigger: fire ---
+                var r2 = gp.buttons[7] ? gp.buttons[7].value : 0;
+                gpSetKey('fire', K_FIRE, r2 > TRIGGER_THRESHOLD);
+
+                // --- A / Cross (button 0): use ---
+                gpSetKey('use', K_USE, gp.buttons[0] ? gp.buttons[0].pressed : false);
+
+                // --- Start (button 9): map toggle ---
+                if (gp.buttons[9] && gp.buttons[9].pressed && !gpState.map) {
+                    gpState.map = true;
+                    inject(EV_DOWN, K_TAB);
+                    setTimeout(function() { inject(EV_UP, K_TAB); }, 100);
+                } else if (gp.buttons[9] && !gp.buttons[9].pressed) {
+                    gpState.map = false;
+                }
+
+                // --- Bumpers: weapon cycling ---
+                var now = Date.now();
+                // R1 (button 5): next weapon
+                if (gp.buttons[5] && gp.buttons[5].pressed && now - gpState.lastWeaponSwitch > WEAPON_DEBOUNCE) {
+                    gpState.lastWeaponSwitch = now;
+                    gpState.weaponSlot++;
+                    if (gpState.weaponSlot > 7) gpState.weaponSlot = 1;
+                    inject(EV_DOWN, 48 + gpState.weaponSlot);
+                    setTimeout(function() { inject(EV_UP, 48 + gpState.weaponSlot); }, 100);
+                }
+                // L1 (button 4): prev weapon
+                if (gp.buttons[4] && gp.buttons[4].pressed && now - gpState.lastWeaponSwitch > WEAPON_DEBOUNCE) {
+                    gpState.lastWeaponSwitch = now;
+                    gpState.weaponSlot--;
+                    if (gpState.weaponSlot < 1) gpState.weaponSlot = 7;
+                    inject(EV_DOWN, 48 + gpState.weaponSlot);
+                    setTimeout(function() { inject(EV_UP, 48 + gpState.weaponSlot); }, 100);
+                }
+            }
+
+            // Poll loop
+            var gpActive = false;
+            function pollGamepad() {
+                var gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+                for (var i = 0; i < gamepads.length; i++) {
+                    if (gamepads[i]) {
+                        processGamepad(gamepads[i]);
+                        break;
+                    }
+                }
+                requestAnimationFrame(pollGamepad);
+            }
+
+            // Start on connect, log for debugging
+            window.addEventListener('gamepadconnected', function(e) {
+                console.log('Gamepad connected:', e.gamepad.id);
+                if (!gpActive) {
+                    gpActive = true;
+                    requestAnimationFrame(pollGamepad);
+                }
+            });
+            window.addEventListener('gamepaddisconnected', function(e) {
+                console.log('Gamepad disconnected:', e.gamepad.id);
+            });
+
+            // Also start polling immediately in case gamepad was connected before page load
+            if (navigator.getGamepads) {
+                var gamepads = navigator.getGamepads();
+                for (var i = 0; i < gamepads.length; i++) {
+                    if (gamepads[i]) {
+                        gpActive = true;
+                        requestAnimationFrame(pollGamepad);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ===== MOBILE TOUCH CONTROLS =====
+        function setupMobileControls() {
+            if (!isTouchDevice) return;
+
+            // Prevent all browser touch gestures on the game area
+            document.body.style.touchAction = 'none';
+            document.body.style.overscrollBehavior = 'none';
+
+            var tc = document.getElementById('touch-controls');
+            var zoneLeft = document.getElementById('touch-zone-left');
+            var zoneRight = document.getElementById('touch-zone-right');
+            var joyBase = document.getElementById('joy-base');
+            var joyKnob = document.getElementById('joy-knob');
+
+            tc.classList.add('active');
+
+            // Block mouse/touch events on canvas so SDL doesn't interpret
+            // touch-to-mouse conversions as clicks (which open DOOM menus)
+            var canvas = document.getElementById('canvas');
+            function blockEvent(e) { e.preventDefault(); e.stopPropagation(); }
+            ['mousedown', 'mouseup', 'click', 'contextmenu',
+             'touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(function(evt) {
+                canvas.addEventListener(evt, blockEvent, true);
+            });
+
+            // DOOM key codes — must match what config translates to via scantokey[]
+            // Config stores DOS scancodes; LoadDefaultCollection translates them
+            // to DOOM keycodes using scantokey[] in m_config.c
+            var K_UP = 0xad, K_DOWN = 0xaf;     // fallback keys (G_BuildTiccmd has hardcoded checks)
+            var K_STRAFE_L = 97;                 // 'a' — scantokey[30]
+            var K_STRAFE_R = 100;                // 'd' — scantokey[32]
+            var K_RSHIFT = 0xb6;                 // run — scantokey[42] = KEY_RSHIFT
+            var K_FIRE = 32;                     // ' ' — scantokey[57] = Space char
+            var K_USE = 101;                     // 'e' — scantokey[18]
+            var K_TAB = 9;                       // map
+            var EV_DOWN = 0, EV_UP = 1;
+
+            var inject = Module._inject_key_event;
+            var injectMouse = Module._inject_mouse_motion;
+
+            // ---- Joystick state ----
+            var joyTouchId = null;
+            var joyCenterX = 0, joyCenterY = 0;
+            var joyRadius = 60;
+            var joyDeadzone = 0.15;
+            var joyKeys = { up: false, down: false, left: false, right: false };
+
+            function joySetKey(name, code, pressed) {
+                if (joyKeys[name] === pressed) return;
+                joyKeys[name] = pressed;
+                inject(pressed ? EV_DOWN : EV_UP, code);
+            }
+
+            function joyUpdate(tx, ty) {
+                var dx = tx - joyCenterX;
+                var dy = ty - joyCenterY;
+                var dist = Math.sqrt(dx * dx + dy * dy);
+                var norm = Math.min(dist / joyRadius, 1);
+
+                // Move knob visually
+                var clampDx = (dist > joyRadius) ? (dx / dist) * joyRadius : dx;
+                var clampDy = (dist > joyRadius) ? (dy / dist) * joyRadius : dy;
+                joyKnob.style.left = (60 + clampDx) + 'px';
+                joyKnob.style.top = (60 + clampDy) + 'px';
+
+                if (norm < joyDeadzone) {
+                    joySetKey('up', K_UP, false);
+                    joySetKey('down', K_DOWN, false);
+                    joySetKey('left', K_STRAFE_L, false);
+                    joySetKey('right', K_STRAFE_R, false);
+                    return;
+                }
+
+                // Normalize direction
+                var nx = dx / dist;
+                var ny = dy / dist;
+
+                // Y axis: forward (up) / backward (down)
+                if (ny < -0.4) { joySetKey('up', K_UP, true); joySetKey('down', K_DOWN, false); }
+                else if (ny > 0.4) { joySetKey('down', K_DOWN, true); joySetKey('up', K_UP, false); }
+                else { joySetKey('up', K_UP, false); joySetKey('down', K_DOWN, false); }
+
+                // X axis: strafe left/right
+                if (nx < -0.4) { joySetKey('left', K_STRAFE_L, true); joySetKey('right', K_STRAFE_R, false); }
+                else if (nx > 0.4) { joySetKey('right', K_STRAFE_R, true); joySetKey('left', K_STRAFE_L, false); }
+                else { joySetKey('left', K_STRAFE_L, false); joySetKey('right', K_STRAFE_R, false); }
+            }
+
+            function joyRelease() {
+                joySetKey('up', K_UP, false);
+                joySetKey('down', K_DOWN, false);
+                joySetKey('left', K_STRAFE_L, false);
+                joySetKey('right', K_STRAFE_R, false);
+                joyBase.classList.remove('visible');
+                joyTouchId = null;
+            }
+
+            // ---- Look joystick state ----
+            var lookTouchId = null;
+            var lookCenterX = 0, lookCenterY = 0;
+            var lookRadius = 60;
+            var lookDeadzone = 0.15;
+            var lookInterval = null;
+            var lookDx = 0;  // current normalized X deflection
+            var lookSensitivity = 150;  // mouse pixels per tick at full deflection
+
+            var lookBase = document.getElementById('look-base');
+            var lookKnob = document.getElementById('look-knob');
+
+            function lookUpdate(tx, ty) {
+                var dx = tx - lookCenterX;
+                var dy = ty - lookCenterY;
+                var dist = Math.sqrt(dx * dx + dy * dy);
+                var norm = Math.min(dist / lookRadius, 1);
+
+                var clampDx = (dist > lookRadius) ? (dx / dist) * lookRadius : dx;
+                var clampDy = (dist > lookRadius) ? (dy / dist) * lookRadius : dy;
+                lookKnob.style.left = (60 + clampDx) + 'px';
+                lookKnob.style.top = (60 + clampDy) + 'px';
+
+                if (norm < lookDeadzone) {
+                    lookDx = 0;
+                    return;
+                }
+                lookDx = dx / dist * norm;  // -1 to 1, scaled by deflection
+            }
+
+            function lookRelease() {
+                lookDx = 0;
+                if (lookInterval) { clearInterval(lookInterval); lookInterval = null; }
+                lookBase.classList.remove('visible');
+                lookKnob.style.left = '50%';
+                lookKnob.style.top = '50%';
+                lookKnob.style.transform = 'translate(-50%, -50%)';
+                lookTouchId = null;
+            }
+
+            // ---- Button state ----
+            var btnTouches = {};  // touchId -> element
+
+            // ---- Left zone: joystick ----
+            zoneLeft.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    var t = e.changedTouches[i];
+                    if (joyTouchId === null) {
+                        joyTouchId = t.identifier;
+                        joyCenterX = t.clientX;
+                        joyCenterY = t.clientY;
+
+                        // Position joystick at touch point
+                        var rect = tc.getBoundingClientRect();
+                        joyBase.style.left = (t.clientX - rect.left - 60) + 'px';
+                        joyBase.style.top = (t.clientY - rect.top - 60) + 'px';
+                        joyBase.classList.add('visible');
+
+                        // Reset knob to center
+                        joyKnob.style.left = '50%';
+                        joyKnob.style.top = '50%';
+                        joyKnob.style.transform = 'translate(-50%, -50%)';
+                    }
+                }
+            }, { passive: false });
+
+            zoneLeft.addEventListener('touchmove', function(e) {
+                e.preventDefault();
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    var t = e.changedTouches[i];
+                    if (t.identifier === joyTouchId) {
+                        // Remove transform so we can position precisely
+                        joyKnob.style.transform = '';
+                        joyUpdate(t.clientX, t.clientY);
+                    }
+                }
+            }, { passive: false });
+
+            zoneLeft.addEventListener('touchend', function(e) {
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === joyTouchId) {
+                        joyRelease();
+                    }
+                }
+            });
+            zoneLeft.addEventListener('touchcancel', function(e) {
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === joyTouchId) {
+                        joyRelease();
+                    }
+                }
+            });
+
+            // ---- Right zone: look joystick ----
+            zoneRight.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    var t = e.changedTouches[i];
+                    // Don't capture if this touch is on a button
+                    var el = document.elementFromPoint(t.clientX, t.clientY);
+                    if (el && el.classList.contains('touch-btn')) continue;
+
+                    if (lookTouchId === null) {
+                        lookTouchId = t.identifier;
+                        lookCenterX = t.clientX;
+                        lookCenterY = t.clientY;
+
+                        var rect = tc.getBoundingClientRect();
+                        lookBase.style.left = (t.clientX - rect.left - 60) + 'px';
+                        lookBase.style.top = (t.clientY - rect.top - 60) + 'px';
+                        lookBase.classList.add('visible');
+                        lookKnob.style.left = '50%';
+                        lookKnob.style.top = '50%';
+                        lookKnob.style.transform = 'translate(-50%, -50%)';
+
+                        // Continuous turning while joystick is held
+                        lookInterval = setInterval(function() {
+                            if (lookDx !== 0) {
+                                injectMouse(Math.round(lookDx * lookSensitivity), 0);
+                            }
+                        }, 33);  // ~30fps
+                    }
+                }
+            }, { passive: false });
+
+            zoneRight.addEventListener('touchmove', function(e) {
+                e.preventDefault();
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    var t = e.changedTouches[i];
+                    if (t.identifier === lookTouchId) {
+                        lookKnob.style.transform = '';
+                        lookUpdate(t.clientX, t.clientY);
+                    }
+                }
+            }, { passive: false });
+
+            zoneRight.addEventListener('touchend', function(e) {
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === lookTouchId) {
+                        lookRelease();
+                    }
+                }
+            });
+            zoneRight.addEventListener('touchcancel', function(e) {
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === lookTouchId) {
+                        lookRelease();
+                    }
+                }
+            });
+
+            // ---- Action buttons ----
+            var currentWeapon = 1;
+            var maxWeapon = 7;
+
+            function setupButton(id, keyCode, toggle) {
+                var el = document.getElementById(id);
+                el.addEventListener('touchstart', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    for (var i = 0; i < e.changedTouches.length; i++) {
+                        btnTouches[e.changedTouches[i].identifier] = { el: el, key: keyCode };
+                    }
+                    el.classList.add('pressed');
+                    inject(EV_DOWN, keyCode);
+                }, { passive: false });
+                el.addEventListener('touchend', function(e) {
+                    e.preventDefault();
+                    for (var i = 0; i < e.changedTouches.length; i++) {
+                        delete btnTouches[e.changedTouches[i].identifier];
+                    }
+                    el.classList.remove('pressed');
+                    if (toggle) {
+                        // Toggle: send keyup after brief delay (TAB for map)
+                        setTimeout(function() { inject(EV_UP, keyCode); }, 100);
+                    } else {
+                        inject(EV_UP, keyCode);
+                    }
+                }, { passive: false });
+                el.addEventListener('touchcancel', function(e) {
+                    for (var i = 0; i < e.changedTouches.length; i++) {
+                        delete btnTouches[e.changedTouches[i].identifier];
+                    }
+                    el.classList.remove('pressed');
+                    inject(EV_UP, keyCode);
+                });
+            }
+
+            setupButton('btn-fire', K_FIRE, false);
+            setupButton('btn-use', K_USE, false);
+            setupButton('btn-map', K_TAB, true);
+
+            // Weapon prev/next
+            var btnPrev = document.getElementById('btn-wpn-prev');
+            var btnNext = document.getElementById('btn-wpn-next');
+            var wpnNum = document.getElementById('wpn-num');
+
+            btnPrev.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                btnPrev.classList.add('pressed');
+                currentWeapon--;
+                if (currentWeapon < 1) currentWeapon = maxWeapon;
+                wpnNum.textContent = currentWeapon;
+                inject(EV_DOWN, 48 + currentWeapon);  // '1'-'7' = 49-55
+                setTimeout(function() { inject(EV_UP, 48 + currentWeapon); }, 100);
+            }, { passive: false });
+            btnPrev.addEventListener('touchend', function(e) {
+                e.preventDefault();
+                btnPrev.classList.remove('pressed');
+            }, { passive: false });
+
+            btnNext.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                btnNext.classList.add('pressed');
+                currentWeapon++;
+                if (currentWeapon > maxWeapon) currentWeapon = 1;
+                wpnNum.textContent = currentWeapon;
+                inject(EV_DOWN, 48 + currentWeapon);
+                setTimeout(function() { inject(EV_UP, 48 + currentWeapon); }, 100);
+            }, { passive: false });
+            btnNext.addEventListener('touchend', function(e) {
+                e.preventDefault();
+                btnNext.classList.remove('pressed');
+            }, { passive: false });
+        }
 
     })();
     </script>

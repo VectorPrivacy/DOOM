@@ -38,9 +38,42 @@
 #include "s_sound.h"
 
 #include "p_inter.h"
+#include "d_loop.h"
+#include "hu_stuff.h"
+#include "m_misc.h"
 
+// Set by HandleDamageEvent to bypass the host-side remote-source skip
+boolean damage_from_event = false;
 
 #define BONUSADD	6
+
+// Monster type to display name mapping for kill messages
+static const char *P_GetMobjName(mobjtype_t type)
+{
+    switch (type)
+    {
+      case MT_POSSESSED: return "Zombieman";
+      case MT_SHOTGUY:   return "Shotgun Guy";
+      case MT_CHAINGUY:  return "Chaingunner";
+      case MT_TROOP:     return "Imp";
+      case MT_SERGEANT:  return "Demon";
+      case MT_SHADOWS:   return "Spectre";
+      case MT_HEAD:      return "Cacodemon";
+      case MT_SKULL:     return "Lost Soul";
+      case MT_BRUISER:   return "Baron of Hell";
+      case MT_KNIGHT:    return "Hell Knight";
+      case MT_BABY:      return "Arachnotron";
+      case MT_VILE:      return "Arch-Vile";
+      case MT_FATSO:     return "Mancubus";
+      case MT_PAIN:      return "Pain Elemental";
+      case MT_UNDEAD:    return "Revenant";
+      case MT_SPIDER:    return "Spider Mastermind";
+      case MT_CYBORG:    return "Cyberdemon";
+      case MT_WOLFSS:    return "Wolfenstein SS";
+      case MT_BARREL:    return "Barrel";
+      default:           return "something";
+    }
+}
 
 
 
@@ -734,7 +767,40 @@ P_KillMobj
 
     if (target->tics < 1)
 	target->tics = 1;
-		
+
+    // Generate kill messages in netgame (host only)
+    if (netgame && !net_client_player && target->player)
+    {
+	char killmsg[128];
+	int victim = (int)(target->player - players);
+	const char *victim_name = net_player_names[victim];
+
+	if (source && source->player && source->player != target->player)
+	{
+	    // Player killed by another player
+	    int killer = (int)(source->player - players);
+	    const char *killer_name = net_player_names[killer];
+	    M_snprintf(killmsg, sizeof(killmsg),
+		       "%s killed %s", killer_name, victim_name);
+	}
+	else if (source && !source->player)
+	{
+	    // Player killed by NPC
+	    const char *npc = P_GetMobjName(source->type);
+	    const char *article = "a";
+	    if (npc[0] == 'A' || npc[0] == 'I')
+		article = "an";
+	    M_snprintf(killmsg, sizeof(killmsg),
+		       "%s was killed by %s %s", victim_name, article, npc);
+	}
+	else
+	{
+	    // Self-kill or environment
+	    M_snprintf(killmsg, sizeof(killmsg), "%s died", victim_name);
+	}
+	D_SendKillMessage(killmsg);
+    }
+
     //	I_StartSound (&actor->r, actor->info->deathsound);
 
     // In Chex Quest, monsters don't drop items.
@@ -807,7 +873,20 @@ P_DamageMobj
     {
 	target->momx = target->momy = target->momz = 0;
     }
-	
+
+    // Client-side NPC damage: report to host, don't apply locally.
+    // Host is authoritative for all monster health/death.
+    if (netgame && net_client_player
+	&& target->net_id > 0 && !target->player)
+    {
+	if (source && source->player
+	    && source->player == &players[consoleplayer])
+	{
+	    D_SendNPCDamageEvent(consoleplayer, target->net_id, damage);
+	}
+	return;
+    }
+
     player = target->player;
     if (player && gameskill == sk_baby)
 	damage >>= 1; 	// take half damage in trainer mode
@@ -847,13 +926,51 @@ P_DamageMobj
     // player specific
     if (player)
     {
+	// Non-host clients: don't compute damage for players.
+	// Host is authoritative — health arrives via health auth broadcast.
+	// Still apply visual feedback (screen flash, attacker tracking).
+	if (netgame && net_client_player)
+	{
+	    // Report OUR attacks on other players to the host
+	    if (source && source->player
+		&& source->player == &players[consoleplayer])
+	    {
+		D_SendDamageEvent(consoleplayer,
+				  (int)(player - players), damage);
+	    }
+	    player->attacker = source;
+	    player->damagecount += damage;
+	    if (player->damagecount > 100)
+		player->damagecount = 100;
+	    temp = damage < 100 ? damage : 100;
+	    if (player == &players[consoleplayer])
+		I_Tactile (40,10,40+temp*2);
+	    // Pain animation (blood spatter) for visual feedback
+	    if (!(target->flags & MF_SKULLFLY))
+	    {
+		target->flags |= MF_JUSTHIT;
+		P_SetMobjState (target, target->info->painstate);
+	    }
+	    return;
+	}
+
+	// Host: skip remote player -> player damage from simulation.
+	// Remote attacks arrive via damage events instead, preventing
+	// double-damage when a ticcmd arrives in time AND an event fires.
+	if (netgame && !damage_from_event
+	    && source && source->player
+	    && source->player != &players[consoleplayer])
+	{
+	    return;
+	}
+
 	// end of game hell hack
 	if (target->subsector->sector->special == 11
 	    && damage >= target->health)
 	{
 	    damage = target->health - 1;
 	}
-	
+
 
 	// Below certain threshold,
 	// ignore damage in GOD mode, or with INVUL power.
@@ -863,14 +980,14 @@ P_DamageMobj
 	{
 	    return;
 	}
-	
+
 	if (player->armortype)
 	{
 	    if (player->armortype == 1)
 		saved = damage/3;
 	    else
 		saved = damage/2;
-	    
+
 	    if (player->armorpoints <= saved)
 	    {
 		// armor is used up
@@ -883,21 +1000,21 @@ P_DamageMobj
 	player->health -= damage; 	// mirror mobj health here for Dave
 	if (player->health < 0)
 	    player->health = 0;
-	
+
 	player->attacker = source;
 	player->damagecount += damage;	// add damage after armor / invuln
 
 	if (player->damagecount > 100)
 	    player->damagecount = 100;	// teleport stomp does 10k points...
-	
+
 	temp = damage < 100 ? damage : 100;
 
 	if (player == &players[consoleplayer])
 	    I_Tactile (40,10,40+temp*2);
     }
-    
-    // do the damage	
-    target->health -= damage;	
+
+    // do the damage
+    target->health -= damage;
     if (target->health <= 0)
     {
 	P_KillMobj (source, target);

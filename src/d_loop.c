@@ -54,11 +54,13 @@ typedef struct {
 
 // Maximum time that we wait in TryRunTics() for netgame data to be
 // received before we bail out and render a frame anyway.
-// VectorDoom: set high for international P2P play over realtimeChannel.
-// With -dup 2, each tic unit is ~57ms, so 35 = ~2 second tolerance.
-// emscripten_sleep(1) in the wait loop yields to the browser event loop
-// so packets can arrive and the page stays responsive.
-#define MAX_NETGAME_STALL_TICS 35
+// VectorDoom: with non-blocking server, stalls should be rare.
+// Keep low so the client doesn't hang waiting for tics.
+#define MAX_NETGAME_STALL_TICS 10
+
+// Send a state snapshot every N tics for desync correction.
+// 2 tics = ~57ms at 35fps. Physics dead-reckons between snapshots.
+#define SNAPSHOT_INTERVAL 2
 
 //
 // gametic is the tic about to (or currently being) run
@@ -112,6 +114,13 @@ static boolean new_sync = true;
 // Callback functions for loop code.
 
 static loop_interface_t *loop_interface = NULL;
+
+// Track whether we are the host (server) for health authority
+static boolean is_host = false;
+
+// Cached client flag — set once in D_InitNetGame, used in hot paths
+// (defined in g_game.c, declared in doomstat.h)
+extern boolean net_client_player;
 
 // Current players in the multiplayer game.
 // This is distinct from playeringame[] used by the game code, which may
@@ -321,6 +330,7 @@ void D_StartNetGame(net_gamesettings_t *settings, netgame_startup_callback_t cal
 
     settings->consoleplayer = 0;
     settings->num_players = 1;
+    settings->start_tic = 0;
     settings->player_classes[0] = player_class;
 
     //!
@@ -384,6 +394,15 @@ void D_StartNetGame(net_gamesettings_t *settings, netgame_startup_callback_t cal
         local_playeringame[i] = i < settings->num_players;
     }
 
+    // Sync tic counters for late joiners (start_tic > 0).
+    // This aligns the client's 8-bit tic sequence with the server's
+    // recvwindow_start so NET_SV_ExpandTicNum works correctly.
+    if (settings->start_tic > 0) {
+        recvtic = settings->start_tic;
+        maketic = settings->start_tic;
+        gametic = settings->start_tic;
+    }
+
     // Copy settings to global variables.
 
     ticdup = settings->ticdup;
@@ -421,6 +440,7 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
     if (M_CheckParm("-server") > 0 || M_CheckParm("-privateserver") > 0) {
         // Server has instanceUID 1
         instanceUID = 1;
+        is_host = true;
         NET_SV_Init();
         NET_SV_AddModule(&net_loop_server_module);
         NET_SV_AddModule(&net_webxdc_module);
@@ -444,6 +464,7 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
         i = M_CheckParmWithArgs("-connect", 1);
 
         if (i > 0) {
+            net_client_player = true;
             net_webxdc_module.InitClient();
             addr = net_webxdc_module.ResolveAddress("1"); // server address is 1!
             NET_ReferenceAddress(addr);
@@ -698,6 +719,17 @@ void TryRunTics(void)
             loop_interface->RunTic(set->cmds, set->ingame);
             gametic++;
 
+            // Send periodic state snapshots to correct desync
+            if (net_client_connected && gametic % SNAPSHOT_INTERVAL == 0
+                && gametic > BACKUPTICS) {
+                D_BuildAndSendSnapshot();
+                // Host broadcasts authoritative health + NPC state
+                if (is_host) {
+                    D_BuildAndSendHealthAuth();
+                    D_BuildAndSendNPCState();
+                }
+            }
+
             // modify command for duplicated tics
 
             TicdupSquash(set);
@@ -705,6 +737,138 @@ void TryRunTics(void)
 
         NetUpdate(); // check for new console commands
     }
+}
+
+void D_BuildAndSendSnapshot(void) {
+    int data[9];
+    if (!net_client_connected || !loop_interface->BuildPlayerSnapshot) return;
+    loop_interface->BuildPlayerSnapshot(localplayer, data);
+    NET_CL_SendPlayerState(localplayer, gametic, data);
+}
+
+void D_ApplyPlayerSnapshot(int player, int gametic_snap, int *data) {
+    if (player == localplayer) return;  // never correct own player
+    if (!loop_interface->ApplyPlayerSnapshot) return;
+    loop_interface->ApplyPlayerSnapshot(player, data);
+}
+
+void D_BuildAndSendHealthAuth(void) {
+    int data[NET_MAXPLAYERS * 5];
+    if (!net_client_connected || !loop_interface->BuildHealthAuth) return;
+    loop_interface->BuildHealthAuth(data);
+    NET_CL_SendHealthAuth(data, NET_MAXPLAYERS);
+}
+
+void D_ApplyHealthAuth(int *data) {
+    if (!loop_interface->ApplyHealthAuth) return;
+    loop_interface->ApplyHealthAuth(localplayer, data);
+}
+
+// Host receives respawn request from a client — respawn them on host's game
+void D_HandleRespawnRequest(int player) {
+    if (!loop_interface || !loop_interface->HandleRespawnRequest) return;
+    loop_interface->HandleRespawnRequest(player);
+}
+
+// Mid-game join: activate a new player on this machine
+void D_PlayerJoinedMidGame(int player) {
+    if (player < 0 || player >= NET_MAXPLAYERS) return;
+    local_playeringame[player] = true;
+    if (loop_interface && loop_interface->PlayerJoined)
+        loop_interface->PlayerJoined(player);
+}
+
+// Client sends respawn request to host
+void D_SendRespawnRequest(void) {
+    if (!net_client_connected) return;
+    NET_CL_SendRespawnRequest(localplayer);
+}
+
+// Client sends damage event to host: "I hit target_player for damage"
+void D_SendDamageEvent(int source_player, int target_player, int damage) {
+    if (!net_client_connected) return;
+    NET_CL_SendDamageEvent(source_player, target_player, damage);
+}
+
+// Host receives damage event from client — apply via game layer
+void D_HandleDamageEvent(int source_player, int target_player, int damage) {
+    if (!loop_interface || !loop_interface->HandleDamageEvent) return;
+    loop_interface->HandleDamageEvent(source_player, target_player, damage);
+}
+
+// Host builds and sends NPC state snapshot to all clients
+void D_BuildAndSendNPCState(void) {
+    unsigned char buf[4000];
+    int len;
+    extern int P_BuildNPCSnapshot(unsigned char *buf, int maxlen);
+    if (!net_client_connected) return;
+    len = P_BuildNPCSnapshot(buf, sizeof(buf));
+    if (len > 0) {
+        NET_CL_SendNPCState(buf, len);
+    }
+}
+
+// Client applies received NPC state snapshot
+void D_ApplyNPCState(unsigned char *data, int len) {
+    extern void P_ApplyNPCSnapshot(unsigned char *buf, int len);
+    P_ApplyNPCSnapshot(data, len);
+}
+
+// Client sends NPC damage event to host
+void D_SendNPCDamageEvent(int source_player, unsigned short target_net_id, int damage) {
+    if (!net_client_connected) return;
+    NET_CL_SendNPCDamage(source_player, target_net_id, damage);
+}
+
+// Host receives NPC damage event from client — apply via game layer
+void D_HandleNPCDamageEvent(int source_player, unsigned short target_net_id, int damage) {
+    if (!loop_interface || !loop_interface->HandleNPCDamageEvent) return;
+    loop_interface->HandleNPCDamageEvent(source_player, target_net_id, damage);
+}
+
+// Client sends USE event to host: "I pressed USE"
+void D_SendUseEvent(int player) {
+    if (!net_client_connected) return;
+    NET_CL_SendUseEvent(player);
+}
+
+// Host receives USE event from client — apply via game layer
+void D_HandleUseEvent(int player) {
+    if (!loop_interface || !loop_interface->HandleUseEvent) return;
+    loop_interface->HandleUseEvent(player);
+}
+
+// Chat messages: full message sent as a packet (bypasses ticcmd chatchar)
+void D_SendChatMessage(int player, const char *msg) {
+    if (!net_client_connected) return;
+    NET_CL_SendChatMessage(player, msg);
+}
+
+void D_HandleChatMessage(int player, const char *msg) {
+    extern void HU_DisplayNetMessage(int player, const char *msg);
+    HU_DisplayNetMessage(player, msg);
+}
+
+// Player name exchange
+void D_SendPlayerName(int player, const char *name) {
+    if (!net_client_connected) return;
+    NET_CL_SendPlayerName(player, name);
+}
+
+void D_HandlePlayerName(int player, const char *name) {
+    extern void HU_SetPlayerName(int player, const char *name);
+    HU_SetPlayerName(player, name);
+}
+
+// Kill messages: host broadcasts kill notifications
+void D_SendKillMessage(const char *msg) {
+    if (!net_client_connected) return;
+    NET_CL_SendKillMessage(msg);
+}
+
+void D_HandleKillMessage(const char *msg) {
+    extern void HU_DisplayKillMessage(const char *msg);
+    HU_DisplayKillMessage(msg);
 }
 
 void D_RegisterLoopCallbacks(loop_interface_t *i) { loop_interface = i; }

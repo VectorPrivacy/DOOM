@@ -466,3 +466,31 @@ void I_BindInputVariables(void)
     M_BindIntVariable("vanilla_keyboard_mapping",  &vanilla_keyboard_mapping);
     M_BindIntVariable("novert",                    &novert);
 }
+
+// --- Mobile touch input: direct event injection ---
+// Called from JavaScript touch controls via Module._inject_key_event()
+// Bypasses SDL entirely, injecting straight into DOOM's event queue.
+
+#include <emscripten.h>
+
+EMSCRIPTEN_KEEPALIVE
+void inject_key_event(int type, int key)
+{
+    event_t event;
+    event.type = type;   // 0 = ev_keydown, 1 = ev_keyup
+    event.data1 = key;   // DOOM key code (doomkeys.h)
+    event.data2 = 0;
+    event.data3 = 0;
+    D_PostEvent(&event);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void inject_mouse_motion(int dx, int dy)
+{
+    event_t event;
+    event.type = ev_mouse;
+    event.data1 = 0;    // no buttons
+    event.data2 = dx;   // X axis = turn
+    event.data3 = dy;   // Y axis = forward/back
+    D_PostEvent(&event);
+}

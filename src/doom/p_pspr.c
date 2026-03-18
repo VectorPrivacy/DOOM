@@ -278,8 +278,11 @@ A_WeaponReady
     int		angle;
     
     // get out of attack state
-    if (player->mo->state == &states[S_PLAY_ATK1]
-	|| player->mo->state == &states[S_PLAY_ATK2] )
+    // Skip for remote players in netgame: their attack animation is
+    // driven by network snapshots, not the local weapon state machine.
+    if (!(netgame && player != &players[consoleplayer])
+        && (player->mo->state == &states[S_PLAY_ATK1]
+            || player->mo->state == &states[S_PLAY_ATK2]))
     {
 	P_SetMobjState (player->mo, S_PLAY);
     }

@@ -36,10 +36,23 @@
 #include "deh_main.h"
 
 #include "d_loop.h"
+#include "hu_stuff.h"
+#include "net_client.h"
+#include "p_local.h"
+#include "p_netsync.h"
+#include "s_sound.h"
+#include "sounds.h"
+
+// P_KillMobj and damage_from_event are defined in p_inter.c
+void P_KillMobj(mobj_t *source, mobj_t *target);
+void P_DamageMobj(mobj_t *target, mobj_t *inflictor, mobj_t *source, int damage);
+extern boolean damage_from_event;
 
 ticcmd_t *netcmds;
 
 // Called when a player leaves the game
+
+void P_RemoveMobj(mobj_t *mobj);
 
 static void PlayerQuitGame(player_t *player)
 {
@@ -58,6 +71,15 @@ static void PlayerQuitGame(player_t *player)
     playeringame[player_num] = false;
     players[consoleplayer].message = exitmsg;
 
+    // Remove the player's mobj to avoid ghost bodies.
+    // Without this, a mid-game join that gets briefly reverted by old tic
+    // data leaves an orphaned body in the world.
+    if (player->mo) {
+        player->mo->player = NULL;
+        P_RemoveMobj(player->mo);
+        player->mo = NULL;
+    }
+
     // TODO: check if it is sensible to do this:
 
     if (demorecording) {
@@ -70,9 +92,15 @@ static void RunTic(ticcmd_t *cmds, boolean *ingame)
     extern boolean advancedemo;
     unsigned int i;
 
-    // Check for player quits.
+    // Check for player joins and quits (driven by tic data from server).
 
     for (i = 0; i < MAXPLAYERS; ++i) {
+        if (!demoplayback && !playeringame[i] && ingame[i]) {
+            // New player appeared in tic data — spawn them
+            playeringame[i] = true;
+            players[i].playerstate = PST_REBORN;
+            printf("RunTic: player %d joined\n", i);
+        }
         if (!demoplayback && playeringame[i] && !ingame[i]) {
             PlayerQuitGame(&players[i]);
         }
@@ -88,7 +116,320 @@ static void RunTic(ticcmd_t *cmds, boolean *ingame)
     G_Ticker();
 }
 
-static loop_interface_t doom_loop_interface = {D_ProcessEvents, G_BuildTiccmd, RunTic, M_Ticker};
+// Per-player last received attack flag (from their actual snapshot, not lock-modified state).
+// Used by BuildPlayerSnapshot for remote players to avoid the lock feeding back into broadcasts.
+static int last_received_attack[MAXPLAYERS];
+
+// --- Player movement interpolation ---
+// Instead of teleporting remote players to snapshot positions, we use
+// exponential smoothing: each tic, move 60% of the remaining error toward
+// the target. The target is extrapolated forward using momentum so the
+// mobj tracks where the player probably IS, not where they WERE.
+//
+// This eliminates the 57ms teleport jerk of the old system while keeping
+// movement responsive. Physics (P_XYMovement/P_ZMovement) is skipped for
+// remote players since interpolation drives their position directly.
+
+#define INTERP_FRAC  39322  // ~60% of FRACUNIT (0.6 * 65536)
+#define TELEPORT_THRESH (128 * FRACUNIT)  // instant teleport above this
+
+typedef struct {
+    fixed_t target_x, target_y, target_z;
+    angle_t target_angle;
+    fixed_t momx, momy, momz;
+    boolean active;
+} player_interp_t;
+
+static player_interp_t player_interp[MAXPLAYERS];
+
+// Player snapshot (8 ints: x, y, z, angle, momx, momy, momz, attack_weapon)
+// attack_weapon: 0 = not attacking, 1-9 = attacking with weapon (readyweapon+1)
+static void BuildPlayerSnapshot(int player, int *data) {
+    mobj_t *mo = players[player].mo;
+    if (!mo) { memset(data, 0, 8 * sizeof(int)); return; }
+    data[0] = mo->x;     data[1] = mo->y;     data[2] = mo->z;
+    data[3] = mo->angle;
+    data[4] = mo->momx;  data[5] = mo->momy;  data[6] = mo->momz;
+    // Local player: read actual mobj state.
+    // Remote players: relay their last received flag, NOT the lock-modified mobj state.
+    if (player == consoleplayer) {
+        data[7] = (mo->state == &states[S_PLAY_ATK1]
+                || mo->state == &states[S_PLAY_ATK2])
+                ? (int)players[player].readyweapon + 1 : 0;
+    } else {
+        data[7] = last_received_attack[player];
+    }
+    data[8] = NET_CL_GetLatency();
+}
+
+// Attack animation lock: prevents local logic from overriding the
+// attack animation for ~250ms after it's triggered by a snapshot.
+#define ATTACK_LOCK_TICS 8
+static int remote_attack_tics[MAXPLAYERS];
+
+// Weapon fire sounds indexed by weapontype_t
+static const int weapon_fire_sfx[] = {
+    sfx_None,    // wp_fist
+    sfx_pistol,  // wp_pistol
+    sfx_shotgn,  // wp_shotgun
+    sfx_pistol,  // wp_chaingun
+    sfx_rlaunc,  // wp_missile
+    sfx_plasma,  // wp_plasma
+    sfx_bfg,     // wp_bfg
+    sfx_None,    // wp_chainsaw
+    sfx_shotgn,  // wp_supershotgun (DOOM2, fallback)
+};
+
+// Apply player snapshot: sets interpolation target instead of teleporting.
+// The actual movement happens in D_TickPlayerInterp() each tic.
+static void ApplyPlayerSnapshot(int player, int *data) {
+    mobj_t *mo = players[player].mo;
+    player_interp_t *interp = &player_interp[player];
+    if (!mo || !playeringame[player]) return;
+
+    // Don't update dead/respawning players via position snapshot
+    if (players[player].playerstate != PST_LIVE) return;
+
+    // Store the actual received attack flag for relay (breaks feedback loop)
+    last_received_attack[player] = data[7];
+
+    // Store remote player's self-reported ping
+    player_pings[player] = data[8];
+
+    // Check for large position delta (teleport/respawn): instant snap
+    if (abs(data[0] - mo->x) > TELEPORT_THRESH
+        || abs(data[1] - mo->y) > TELEPORT_THRESH
+        || !interp->active)
+    {
+        P_UnsetThingPosition(mo);
+        mo->x = data[0];  mo->y = data[1];  mo->z = data[2];
+        P_SetThingPosition(mo);
+        mo->angle = (unsigned int)data[3];
+    }
+
+    // Set interpolation target (don't move mobj - smoothing handles it)
+    interp->target_x = data[0];
+    interp->target_y = data[1];
+    interp->target_z = data[2];
+    interp->target_angle = (angle_t)data[3];
+    interp->momx = data[4];
+    interp->momy = data[5];
+    interp->momz = data[6];
+    interp->active = true;
+
+    // Set momentum on mobj (used for animation state detection)
+    mo->momx = data[4];  mo->momy = data[5];  mo->momz = data[6];
+
+    // Animation lock: if active, force attack state if local logic overrode it
+    if (remote_attack_tics[player] > 0) {
+        if (mo->state != &states[S_PLAY_ATK1]
+            && mo->state != &states[S_PLAY_ATK2])
+        {
+            P_SetMobjStateNoAction(mo, S_PLAY_ATK2);
+        }
+        remote_attack_tics[player] -= 2;
+    }
+
+    // Detect attack from snapshot
+    if (data[7] > 0) {
+        // New attack: trigger animation + sound + lock
+        if (remote_attack_tics[player] <= 0) {
+            int weapon = data[7] - 1;
+            P_SetMobjState(mo, S_PLAY_ATK1);
+            if (weapon >= 0 && weapon < (int)(sizeof(weapon_fire_sfx)/sizeof(weapon_fire_sfx[0]))
+                && weapon_fire_sfx[weapon] != sfx_None)
+                S_StartSound(mo, weapon_fire_sfx[weapon]);
+        }
+        remote_attack_tics[player] = ATTACK_LOCK_TICS;
+    }
+
+    // Return to idle: no attack, no momentum, lock expired, not already idle
+    if (data[7] == 0 && remote_attack_tics[player] <= 0
+        && data[4] == 0 && data[5] == 0
+        && mo->state != &states[S_PLAY])
+    {
+        P_SetMobjStateNoAction(mo, S_PLAY);
+    }
+}
+
+// Called every tic from P_MobjThinker for remote players.
+// Smoothly moves the mobj toward the interpolation target using
+// exponential smoothing, with momentum-based extrapolation.
+void D_TickPlayerInterp(int player, mobj_t *mo)
+{
+    player_interp_t *interp = &player_interp[player];
+    fixed_t dx, dy, dz;
+
+    if (!interp->active) return;
+
+    // Extrapolate target forward using momentum (predicts where
+    // the player probably IS now, not where the snapshot said they WERE)
+    interp->target_x += interp->momx;
+    interp->target_y += interp->momy;
+    // Don't extrapolate Z: gravity/floors make it unreliable
+
+    // Exponential smoothing: each tic, close 60% of the gap
+    dx = interp->target_x - mo->x;
+    dy = interp->target_y - mo->y;
+    dz = interp->target_z - mo->z;
+
+    P_UnsetThingPosition(mo);
+    mo->x += FixedMul(dx, INTERP_FRAC);
+    mo->y += FixedMul(dy, INTERP_FRAC);
+    P_SetThingPosition(mo);
+
+    mo->z += FixedMul(dz, INTERP_FRAC);
+    // Note: angle is NOT interpolated here. P_MovePlayer already applies
+    // the ticcmd angleturn each tic, which is deterministic and synced.
+    // Interpolating toward a stale snapshot angle fights the ticcmd and
+    // causes the remote player to appear rotated ~90 degrees wrong.
+}
+
+// Host-authoritative health: host broadcasts all players' health + state.
+// Clients apply this as ground truth — the host decides who lives and dies.
+
+static void BuildHealthAuth(int *data) {
+    unsigned int i;
+    for (i = 0; i < MAXPLAYERS; i++) {
+        if (playeringame[i] && players[i].mo) {
+            data[i * 5]     = players[i].health;
+            data[i * 5 + 1] = players[i].playerstate;
+            data[i * 5 + 2] = players[i].killcount;
+            data[i * 5 + 3] = players[i].itemcount;
+            data[i * 5 + 4] = players[i].secretcount;
+        } else {
+            data[i * 5]     = 0;
+            data[i * 5 + 1] = 0;
+            data[i * 5 + 2] = 0;
+            data[i * 5 + 3] = 0;
+            data[i * 5 + 4] = 0;
+        }
+    }
+}
+
+static void ApplyHealthAuth(int localplayer, int *data) {
+    unsigned int i;
+    for (i = 0; i < MAXPLAYERS; i++) {
+        int auth_health = data[i * 5];
+        int auth_state  = data[i * 5 + 1];
+        mobj_t *mo;
+
+        if (!playeringame[i]) continue;
+
+        // Sync scores for all players (host is authoritative)
+        players[i].killcount   = data[i * 5 + 2];
+        players[i].itemcount   = data[i * 5 + 3];
+        players[i].secretcount = data[i * 5 + 4];
+
+        mo = players[i].mo;
+        if (!mo) continue;
+
+        // Host says player is dead, but locally they're alive: kill them
+        if (auth_state == PST_DEAD && players[i].playerstate == PST_LIVE) {
+            players[i].health = mo->health = auth_health;
+            P_KillMobj(NULL, mo);
+            continue;
+        }
+
+        // Host says player is alive, but locally they're dead: respawn
+        if (auth_state == PST_LIVE && players[i].playerstate == PST_DEAD) {
+            players[i].playerstate = PST_REBORN;
+            continue;
+        }
+
+        // Both agree player is alive: sync health directly
+        if (auth_state == PST_LIVE && players[i].playerstate == PST_LIVE) {
+            // Pain animation when health decreases (blood spatter)
+            if (auth_health < players[i].health && auth_health > 0) {
+                P_SetMobjState(mo, mo->info->painstate);
+            }
+            players[i].health = mo->health = auth_health;
+        }
+    }
+}
+
+// Host receives respawn request: set the player to PST_REBORN
+static void HandleRespawnRequest(int player) {
+    if (player < 0 || player >= MAXPLAYERS) return;
+    if (!playeringame[player]) return;
+    if (players[player].playerstate != PST_DEAD) return;
+    players[player].playerstate = PST_REBORN;
+}
+
+// Host receives damage event: a client reports hitting a player.
+// Apply damage through P_DamageMobj with the damage_from_event flag
+// so the host-side remote-source skip is bypassed.
+static void HandleDamageEvent(int source_player, int target_player, int damage) {
+    mobj_t *source_mo, *target_mo;
+    if (source_player < 0 || source_player >= MAXPLAYERS) return;
+    if (target_player < 0 || target_player >= MAXPLAYERS) return;
+    if (!playeringame[source_player] || !playeringame[target_player]) return;
+    source_mo = players[source_player].mo;
+    target_mo = players[target_player].mo;
+    if (!source_mo || !target_mo) return;
+    if (players[target_player].playerstate != PST_LIVE) return;
+
+    // Show attack animation for the source player on the host
+    if (players[source_player].playerstate == PST_LIVE)
+        P_SetMobjState(source_mo, S_PLAY_ATK1);
+
+    damage_from_event = true;
+    P_DamageMobj(target_mo, source_mo, source_mo, damage);
+    damage_from_event = false;
+}
+
+// Host receives NPC damage event: a client reports hitting a monster.
+// Look up the target by net_id and apply damage on the host.
+static void HandleNPCDamageEvent(int source_player, unsigned short target_net_id, int damage) {
+    mobj_t *source_mo, *target_mo;
+    if (source_player < 0 || source_player >= MAXPLAYERS) return;
+    if (!playeringame[source_player]) return;
+    source_mo = players[source_player].mo;
+    if (!source_mo) return;
+
+    target_mo = P_NetLookup(target_net_id);
+    if (!target_mo) return;
+    if (!(target_mo->flags & MF_SHOOTABLE)) return;
+
+    P_DamageMobj(target_mo, source_mo, source_mo, damage);
+}
+
+// Host receives USE event: a client reports pressing USE.
+// Call P_UseLines so the host processes the interaction (doors, switches).
+static void HandleUseEvent(int player) {
+    if (player < 0 || player >= MAXPLAYERS) return;
+    if (!playeringame[player]) return;
+    if (players[player].playerstate != PST_LIVE) return;
+    if (!players[player].mo) return;
+    P_UseLines(&players[player]);
+}
+
+// A new player joined mid-game (late join).
+// Don't set playeringame here — RunTic handles it when tic data arrives
+// with ingame[player]=true, avoiding a race with old tics that could
+// trigger PlayerQuitGame before new tic data arrives.
+extern char *net_player_name;
+extern void D_SendPlayerName(int player, const char *name);
+
+static void HandlePlayerJoined(int player) {
+    if (player < 0 || player >= MAXPLAYERS) return;
+    printf("Player %d joined mid-game\n", player);
+
+    // Re-broadcast our name so the late joiner learns it.
+    // The original name broadcast happened at game start, before they joined.
+    if (net_player_name && net_player_name[0]) {
+        D_SendPlayerName(consoleplayer, net_player_name);
+    }
+}
+
+static loop_interface_t doom_loop_interface = {
+    D_ProcessEvents, G_BuildTiccmd, RunTic, M_Ticker,
+    BuildPlayerSnapshot, ApplyPlayerSnapshot,
+    BuildHealthAuth, ApplyHealthAuth,
+    HandleRespawnRequest, HandleDamageEvent,
+    HandleNPCDamageEvent, HandleUseEvent,
+    HandlePlayerJoined
+};
 
 // Load game settings from the specified structure and
 // set global variables.
@@ -260,5 +601,15 @@ void D_CheckNetGame(void)
         }
     }
     printf("doom: 10, game started\n");
+
+    // Broadcast our player name to other players
+    if (netgame) {
+        extern char *net_player_name;
+        if (net_player_name && net_player_name[0]) {
+            extern void HU_SetPlayerName(int player, const char *name);
+            HU_SetPlayerName(consoleplayer, net_player_name);
+            D_SendPlayerName(consoleplayer, net_player_name);
+        }
+    }
 }
 

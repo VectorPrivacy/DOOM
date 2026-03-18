@@ -151,6 +151,19 @@ typedef enum
     NET_PACKET_TYPE_QUERY_RESPONSE,
     NET_PACKET_TYPE_LAUNCH,
     NET_PACKET_TYPE_NAT_HOLE_PUNCH,
+    NET_PACKET_TYPE_PLAYER_STATE,
+    NET_PACKET_TYPE_HEALTH_AUTH,
+    NET_PACKET_TYPE_RESPAWN_REQUEST,
+    NET_PACKET_TYPE_DAMAGE_EVENT,
+    NET_PACKET_TYPE_NPC_STATE,
+    NET_PACKET_TYPE_NPC_DAMAGE,
+    NET_PACKET_TYPE_USE_EVENT,
+    NET_PACKET_TYPE_CHAT_MSG,
+    NET_PACKET_TYPE_PLAYER_NAME,
+    NET_PACKET_TYPE_KILL_MSG,
+    NET_PACKET_TYPE_PING,
+    NET_PACKET_TYPE_PONG,
+    NET_PACKET_TYPE_PLAYER_JOINED,
 } net_packet_type_t;
 
 typedef enum
@@ -210,6 +223,10 @@ typedef struct
 
     int num_players;
     int consoleplayer;
+
+    // Starting tic for late joiners (0 for normal game start).
+    // Syncs the client's recvwindow_start with the server's ticcmd sequence.
+    int start_tic;
 
     // Hexen player classes:
 

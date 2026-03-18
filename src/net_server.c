@@ -151,6 +151,12 @@ static net_gamesettings_t sv_settings;
 static unsigned int recvwindow_start;
 static net_client_recv_t recvwindow[BACKUPTICS][NET_MAXPLAYERS];
 
+// Non-blocking server: track each player's last known full ticcmd
+// (reconstructed from running diffs, not just the last diff)
+static ticcmd_t sv_last_ticcmd[NET_MAXPLAYERS];
+static boolean sv_player_has_sent[NET_MAXPLAYERS];
+static int sv_loopback_player = -1;  // player index of the host (loopback client)
+
 #define NET_SV_ExpandTicNum(b) NET_ExpandTicNum(recvwindow_start, (b))
 
 static void NET_SV_DisconnectClient(net_client_t *client)
@@ -420,7 +426,6 @@ static unsigned int NET_SV_LatestAcknowledged(void)
 static void NET_SV_AdvanceWindow(void)
 {
     unsigned int lowtic;
-    int i;
 
     if (NET_SV_NumPlayers() <= 0) {
         return;
@@ -431,33 +436,11 @@ static void NET_SV_AdvanceWindow(void)
     // Advance the recv window until it catches up with lowtic
 
     while (recvwindow_start < lowtic) {
-        boolean should_advance;
-
-        // Check we have tics from all players for first tic in
-        // the recv window
-
-        should_advance = true;
-
-        for (i = 0; i < NET_MAXPLAYERS; ++i) {
-            if (sv_players[i] == NULL || !ClientConnected(sv_players[i])) {
-                continue;
-            }
-
-            if (!recvwindow[0][i].active) {
-                should_advance = false;
-                break;
-            }
-        }
-
-        if (!should_advance) {
-            // The first tic is not complete: ie. we have not
-            // received tics from all connected players.  This can
-            // happen if only one player is in the game.
-
-            break;
-        }
-
-        // Advance the window
+        // Non-blocking: advance unconditionally up to lowtic.
+        // PumpSendQueue handles missing tics by using last-known-input
+        // directly (without modifying recvwindow), so it's safe to
+        // discard old positions here. The window is naturally throttled
+        // by client ack round-trip time, giving real data time to arrive.
 
         memmove(recvwindow, recvwindow + 1, sizeof(*recvwindow) * (BACKUPTICS - 1));
         memset(&recvwindow[BACKUPTICS - 1], 0, sizeof(*recvwindow));
@@ -524,6 +507,113 @@ static void NET_SV_InitNewClient(net_client_t *client, net_addr_t *addr, net_pro
     memset(client->sendqueue, 0xff, sizeof(client->sendqueue));
 
     NET_Log("server: initialized new client from %s", NET_AddrToString(addr));
+}
+
+// Handle a late joiner connecting during SERVER_IN_GAME.
+// Fast-track them through LAUNCH + GAMESTART and notify existing clients.
+
+static void NET_SV_HandleLateJoin(net_client_t *new_client)
+{
+    net_packet_t *launchpacket;
+    net_packet_t *startpacket;
+    net_packet_t *joinpacket;
+    int slot = -1;
+    int max_players;
+    int num_players;
+    unsigned int i;
+
+    // NET_SV_AssignPlayers() ran during ParseSYN and may have already
+    // assigned this client to a sequential slot. Clear that assignment
+    // first so we can pick the correct slot without double-booking.
+    for (i = 0; i < NET_MAXPLAYERS; ++i) {
+        if (sv_players[i] == new_client) {
+            sv_players[i] = NULL;
+        }
+    }
+
+    // Find a free player slot (don't reassign existing players)
+    max_players = NET_SV_MaxPlayers();
+    for (i = 0; i < (unsigned int)max_players; ++i) {
+        if (sv_players[i] == NULL) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot < 0) {
+        NET_Log("server: late join rejected, game is full");
+        NET_SV_SendReject(new_client->addr, "Game is full!");
+        new_client->active = false;
+        return;
+    }
+
+    // Assign player number
+    sv_players[slot] = new_client;
+    new_client->player_number = slot;
+    new_client->drone = false;
+    new_client->ready = true;
+
+    // Compute num_players as highest occupied slot + 1 (not just count).
+    // This ensures local_playeringame[] covers all active slots,
+    // even if there are gaps from disconnected players.
+    num_players = 0;
+    for (i = 0; i < NET_MAXPLAYERS; ++i) {
+        if (sv_players[i] != NULL && ClientConnected(sv_players[i])) {
+            num_players = i + 1;
+        }
+    }
+
+    NET_Log("server: late join accepted, player %d (num_players %d)", slot, num_players);
+    printf("Server: player %d joined mid-game (%d total)\n", slot, num_players);
+
+    // Sync ticcmd sequence to current server position.
+    // Both sendseq and acknowledged must start at recvwindow_start —
+    // otherwise CheckDeadlock tries to resend from acknowledged=0 through
+    // sendseq-1, hitting uninitialized sendqueue slots.
+    new_client->sendseq = recvwindow_start;
+    new_client->acknowledged = recvwindow_start;
+    new_client->last_gamedata_time = I_GetTimeMS();
+
+    // Pre-fill sendqueue for the extratics lookback range.
+    // PumpSendQueue does: starttic = sendseq - extratics, then reads
+    // sendqueue[starttic % BACKUPTICS]. Without this, those slots are
+    // 0xff from InitNewClient's memset, causing "Wanted to send X, but
+    // -1 is in its place" crash.
+    {
+        int fill_start = recvwindow_start - sv_settings.extratics;
+        int fill_end = recvwindow_start;  // exclusive
+        int t;
+
+        if (fill_start < 0) fill_start = 0;
+
+        for (t = fill_start; t < fill_end; ++t) {
+            net_full_ticcmd_t *cmd = &new_client->sendqueue[t % BACKUPTICS];
+            memset(cmd, 0, sizeof(*cmd));
+            cmd->seq = t;
+        }
+    }
+
+    // Send LAUNCH (reliable) — transitions client from WAITING_LAUNCH to WAITING_START
+    launchpacket = NET_Conn_NewReliable(&new_client->connection, NET_PACKET_TYPE_LAUNCH);
+    NET_WriteInt8(launchpacket, num_players);
+
+    // Send GAMESTART (reliable) — transitions client from WAITING_START to IN_GAME
+    startpacket = NET_Conn_NewReliable(&new_client->connection, NET_PACKET_TYPE_GAMESTART);
+    sv_settings.consoleplayer = slot;
+    sv_settings.num_players = num_players;
+    sv_settings.start_tic = recvwindow_start;
+    NET_WriteSettings(startpacket, &sv_settings);
+
+    // Broadcast PLAYER_JOINED to all connected clients (including loopback/host).
+    // The host receives this via loopback → NET_CL_ParsePlayerJoined →
+    // D_PlayerJoinedMidGame, keeping the code path unified.
+    for (i = 0; i < MAXNETNODES; ++i) {
+        if (!ClientConnected(&clients[i])) continue;
+        if (&clients[i] == new_client) continue;
+        joinpacket = NET_Conn_NewReliable(&clients[i].connection,
+                                           NET_PACKET_TYPE_PLAYER_JOINED);
+        NET_WriteInt8(joinpacket, slot);
+    }
 }
 
 // parse a SYN from a client(initiating a connection)
@@ -614,8 +704,8 @@ static void NET_SV_ParseSYN(net_packet_t *packet, net_client_t *client, net_addr
     // At this point we have received a valid SYN.
 
     // Not accepting new connections?
-    if (server_state != SERVER_WAITING_LAUNCH) {
-        NET_Log("server: error: not in waiting launch state, server_state=%d", server_state);
+    if (server_state != SERVER_WAITING_LAUNCH && server_state != SERVER_IN_GAME) {
+        NET_Log("server: error: not in waiting launch/in-game state, server_state=%d", server_state);
         NET_SV_SendReject(addr, "Server is not currently accepting connections");
         return;
     }
@@ -703,6 +793,11 @@ static void NET_SV_ParseSYN(net_packet_t *packet, net_client_t *client, net_addr
     reply = NET_Conn_NewReliable(&client->connection, NET_PACKET_TYPE_SYN);
     NET_WriteString(reply, PACKAGE_STRING);
     NET_WriteProtocol(reply, protocol);
+
+    // If game is already running, fast-track this client into the game
+    if (server_state == SERVER_IN_GAME) {
+        NET_SV_HandleLateJoin(client);
+    }
 }
 
 // Parse a launch packet. This is sent by the key player when the "start"
@@ -772,6 +867,7 @@ static void StartGame(void)
     }
 
     sv_settings.num_players = NET_SV_NumPlayers();
+    sv_settings.start_tic = 0;
 
     // Copy player classes:
 
@@ -806,6 +902,19 @@ static void StartGame(void)
 
     memset(recvwindow, 0, sizeof(recvwindow));
     recvwindow_start = 0;
+
+    memset(sv_last_ticcmd, 0, sizeof(sv_last_ticcmd));
+    memset(sv_player_has_sent, 0, sizeof(sv_player_has_sent));
+
+    // Find the loopback player (host)
+    sv_loopback_player = -1;
+    for (i = 0; i < MAXNETNODES; ++i) {
+        if (clients[i].active && clients[i].addr
+            && clients[i].addr->module == &net_loop_server_module) {
+            sv_loopback_player = clients[i].player_number;
+            break;
+        }
+    }
 }
 
 // Returns true when all nodes have indicated readiness to start the game.
@@ -1050,6 +1159,11 @@ static void NET_SV_ParseGameData(net_packet_t *packet, net_client_t *client)
         recvobj->diff = diff;
         recvobj->latency = latency;
 
+        // Reconstruct the full ticcmd by patching the running baseline.
+        // This gives us complete absolute values for fabrication.
+        NET_TiccmdPatch(&sv_last_ticcmd[player], &diff, &sv_last_ticcmd[player]);
+        sv_player_has_sent[player] = true;
+
         client->last_gamedata_time = nowtime;
         NET_Log("server: stored tic %d for player %d", seq + i, player);
     }
@@ -1266,6 +1380,216 @@ void NET_SV_SendQueryResponse(net_addr_t *addr)
     NET_FreePacket(reply);
 }
 
+// Forward a player state snapshot to all other connected clients
+
+static void NET_SV_ForwardPlayerState(net_packet_t *packet, net_client_t *sender) {
+    unsigned int i;
+    unsigned int player, tick;
+    int data[9];
+    int j;
+
+    if (!NET_ReadInt8(packet, &player)) return;
+    if (!NET_ReadInt32(packet, &tick)) return;
+    for (j = 0; j < 9; j++) {
+        if (!NET_ReadSInt32(packet, &data[j])) return;
+    }
+
+    for (i = 0; i < MAXNETNODES; ++i) {
+        net_packet_t *fwd;
+        if (!ClientConnected(&clients[i]) || &clients[i] == sender) continue;
+
+        fwd = NET_NewPacket(48);
+        NET_WriteInt16(fwd, NET_PACKET_TYPE_PLAYER_STATE);
+        NET_WriteInt8(fwd, player);
+        NET_WriteInt32(fwd, tick);
+        for (j = 0; j < 9; j++) NET_WriteInt32(fwd, (unsigned int)data[j]);
+        NET_Conn_SendPacket(&clients[i].connection, fwd);
+        NET_FreePacket(fwd);
+    }
+}
+
+// Forward host-authoritative health broadcast to all other clients
+
+static void NET_SV_ForwardHealthAuth(net_packet_t *packet, net_client_t *sender) {
+    unsigned int i;
+    unsigned int num_players;
+    int data[NET_MAXPLAYERS * 5];
+    int j;
+
+    if (!NET_ReadInt8(packet, &num_players)) return;
+    if (num_players > NET_MAXPLAYERS) return;
+    for (j = 0; j < (int)num_players * 5; j++) {
+        if (!NET_ReadSInt32(packet, &data[j])) return;
+    }
+
+    for (i = 0; i < MAXNETNODES; ++i) {
+        net_packet_t *fwd;
+        if (!ClientConnected(&clients[i]) || &clients[i] == sender) continue;
+
+        fwd = NET_NewPacket(4 + num_players * 20);
+        NET_WriteInt16(fwd, NET_PACKET_TYPE_HEALTH_AUTH);
+        NET_WriteInt8(fwd, num_players);
+        for (j = 0; j < (int)num_players * 5; j++) NET_WriteInt32(fwd, (unsigned int)data[j]);
+        NET_Conn_SendPacket(&clients[i].connection, fwd);
+        NET_FreePacket(fwd);
+    }
+}
+
+// Handle respawn request from a client — call into the game layer
+// to set PST_REBORN on the host's authoritative game state.
+
+extern void D_HandleRespawnRequest(int player);
+extern void D_HandleDamageEvent(int source_player, int target_player, int damage);
+extern void D_HandleNPCDamageEvent(int source_player, unsigned short target_net_id, int damage);
+
+static void NET_SV_HandleRespawnRequest(net_packet_t *packet, net_client_t *client) {
+    unsigned int player;
+    if (!NET_ReadInt8(packet, &player)) return;
+    if (player >= NET_MAXPLAYERS) return;
+    // Only allow respawn for the player this client controls
+    if ((int)player != client->player_number) return;
+    D_HandleRespawnRequest(player);
+}
+
+// Handle damage event from a client — client reports hitting a player.
+// Server validates and calls into game layer to apply damage on host.
+
+static void NET_SV_HandleDamageEvent(net_packet_t *packet, net_client_t *client) {
+    unsigned int source, target, dmg;
+    if (!NET_ReadInt8(packet, &source)) return;
+    if (!NET_ReadInt8(packet, &target)) return;
+    if (!NET_ReadInt16(packet, &dmg)) return;
+    if ((int)source != client->player_number) return;
+    if (target >= NET_MAXPLAYERS) return;
+    D_HandleDamageEvent(source, target, dmg);
+}
+
+// Forward NPC state snapshot from host to all other clients
+
+static void NET_SV_ForwardNPCState(net_packet_t *packet, net_client_t *sender) {
+    unsigned char buf[4000];
+    int len = 0;
+    unsigned int byte_val;
+    unsigned int i;
+
+    // Read all remaining bytes
+    while (NET_ReadInt8(packet, &byte_val) && len < (int)sizeof(buf)) {
+        buf[len++] = (unsigned char)byte_val;
+    }
+
+    // Forward to all other connected clients
+    for (i = 0; i < MAXNETNODES; ++i) {
+        net_packet_t *fwd;
+        int j;
+        if (!ClientConnected(&clients[i]) || &clients[i] == sender) continue;
+        fwd = NET_NewPacket(len + 4);
+        NET_WriteInt16(fwd, NET_PACKET_TYPE_NPC_STATE);
+        for (j = 0; j < len; j++) NET_WriteInt8(fwd, buf[j]);
+        NET_Conn_SendPacket(&clients[i].connection, fwd);
+        NET_FreePacket(fwd);
+    }
+}
+
+// Handle NPC damage event from a client — client reports hitting a monster.
+// Server validates and calls into game layer to apply damage on host.
+
+// Handle USE event from a client — client reports pressing USE.
+// Server calls into game layer to process interaction on host.
+extern void D_HandleUseEvent(int player);
+extern void D_HandleChatMessage(int player, const char *msg);
+extern void D_HandlePlayerName(int player, const char *name);
+extern void D_HandleKillMessage(const char *msg);
+
+// Forward chat message to all other clients + apply on host
+static void NET_SV_HandleChatMessage(net_packet_t *packet, net_client_t *client) {
+    unsigned int player;
+    char *msg;
+    unsigned int i;
+    if (!NET_ReadInt8(packet, &player)) return;
+    if ((int)player != client->player_number) return;
+    msg = NET_ReadString(packet);
+    if (msg == NULL) return;
+
+    // Apply on host
+    D_HandleChatMessage((int)player, msg);
+
+    // Forward to all other clients
+    for (i = 0; i < MAXNETNODES; ++i) {
+        net_packet_t *fwd;
+        if (!ClientConnected(&clients[i]) || &clients[i] == client) continue;
+        fwd = NET_NewPacket(4 + (int)strlen(msg));
+        NET_WriteInt16(fwd, NET_PACKET_TYPE_CHAT_MSG);
+        NET_WriteInt8(fwd, player);
+        NET_WriteString(fwd, msg);
+        NET_Conn_SendPacket(&clients[i].connection, fwd);
+        NET_FreePacket(fwd);
+    }
+}
+
+// Forward player name to all other clients + apply on host
+static void NET_SV_HandlePlayerName(net_packet_t *packet, net_client_t *client) {
+    unsigned int player;
+    char *name;
+    unsigned int i;
+    if (!NET_ReadInt8(packet, &player)) return;
+    if ((int)player != client->player_number) return;
+    name = NET_ReadString(packet);
+    if (name == NULL) return;
+
+    // Apply on host
+    D_HandlePlayerName((int)player, name);
+
+    // Forward to all other clients
+    for (i = 0; i < MAXNETNODES; ++i) {
+        net_packet_t *fwd;
+        if (!ClientConnected(&clients[i]) || &clients[i] == client) continue;
+        fwd = NET_NewPacket(4 + (int)strlen(name));
+        NET_WriteInt16(fwd, NET_PACKET_TYPE_PLAYER_NAME);
+        NET_WriteInt8(fwd, player);
+        NET_WriteString(fwd, name);
+        NET_Conn_SendPacket(&clients[i].connection, fwd);
+        NET_FreePacket(fwd);
+    }
+}
+
+// Forward kill message to all other clients + apply on host
+static void NET_SV_HandleKillMessage(net_packet_t *packet, net_client_t *client) {
+    char *msg;
+    unsigned int i;
+    msg = NET_ReadString(packet);
+    if (msg == NULL) return;
+
+    // Apply on host
+    D_HandleKillMessage(msg);
+
+    // Forward to all other clients
+    for (i = 0; i < MAXNETNODES; ++i) {
+        net_packet_t *fwd;
+        if (!ClientConnected(&clients[i]) || &clients[i] == client) continue;
+        fwd = NET_NewPacket(4 + (int)strlen(msg));
+        NET_WriteInt16(fwd, NET_PACKET_TYPE_KILL_MSG);
+        NET_WriteString(fwd, msg);
+        NET_Conn_SendPacket(&clients[i].connection, fwd);
+        NET_FreePacket(fwd);
+    }
+}
+
+static void NET_SV_HandleUseEvent(net_packet_t *packet, net_client_t *client) {
+    unsigned int player;
+    if (!NET_ReadInt8(packet, &player)) return;
+    if ((int)player != client->player_number) return;
+    D_HandleUseEvent(player);
+}
+
+static void NET_SV_HandleNPCDamage(net_packet_t *packet, net_client_t *client) {
+    unsigned int source, net_id, dmg;
+    if (!NET_ReadInt8(packet, &source)) return;
+    if (!NET_ReadInt16(packet, &net_id)) return;
+    if (!NET_ReadInt16(packet, &dmg)) return;
+    if ((int)source != client->player_number) return;
+    D_HandleNPCDamageEvent(source, (unsigned short)net_id, dmg);
+}
+
 // Process a packet received by the server
 
 static void NET_SV_Packet(net_packet_t *packet, net_addr_t *addr)
@@ -1319,6 +1643,48 @@ static void NET_SV_Packet(net_packet_t *packet, net_addr_t *addr)
         case NET_PACKET_TYPE_GAMEDATA_RESEND:
             NET_SV_ParseResendRequest(packet, client);
             break;
+        case NET_PACKET_TYPE_PLAYER_STATE:
+            NET_SV_ForwardPlayerState(packet, client);
+            break;
+        case NET_PACKET_TYPE_HEALTH_AUTH:
+            NET_SV_ForwardHealthAuth(packet, client);
+            break;
+        case NET_PACKET_TYPE_RESPAWN_REQUEST:
+            NET_SV_HandleRespawnRequest(packet, client);
+            break;
+        case NET_PACKET_TYPE_DAMAGE_EVENT:
+            NET_SV_HandleDamageEvent(packet, client);
+            break;
+        case NET_PACKET_TYPE_NPC_STATE:
+            NET_SV_ForwardNPCState(packet, client);
+            break;
+        case NET_PACKET_TYPE_NPC_DAMAGE:
+            NET_SV_HandleNPCDamage(packet, client);
+            break;
+        case NET_PACKET_TYPE_USE_EVENT:
+            NET_SV_HandleUseEvent(packet, client);
+            break;
+        case NET_PACKET_TYPE_CHAT_MSG:
+            NET_SV_HandleChatMessage(packet, client);
+            break;
+        case NET_PACKET_TYPE_PLAYER_NAME:
+            NET_SV_HandlePlayerName(packet, client);
+            break;
+        case NET_PACKET_TYPE_KILL_MSG:
+            NET_SV_HandleKillMessage(packet, client);
+            break;
+        case NET_PACKET_TYPE_PING:
+        {
+            unsigned int ts;
+            if (NET_ReadInt32(packet, &ts)) {
+                net_packet_t *pong = NET_NewPacket(6);
+                NET_WriteInt16(pong, NET_PACKET_TYPE_PONG);
+                NET_WriteInt32(pong, ts);
+                NET_Conn_SendPacket(&client->connection, pong);
+                NET_FreePacket(pong);
+            }
+            break;
+        }
         default:
             // unknown packet type
 
@@ -1334,6 +1700,7 @@ static void NET_SV_PumpSendQueue(net_client_t *client)
     int num_players;
     int i;
     int starttic, endtic;
+    boolean target_is_loopback;
 
     // If a client has not sent any acknowledgments for a while,
     // wait until they catch up.
@@ -1366,12 +1733,8 @@ static void NET_SV_PumpSendQueue(net_client_t *client)
             continue;
         }
 
-        if (!recvwindow[recv_index][i].active) {
-            // We do not have this player's ticcmd, so we cannot
-            // generate a complete command yet.
-
-            return;
-        }
+        // Non-blocking: don't return early if tic is missing.
+        // We'll use last-known-input when building the cmd below.
 
         ++num_players;
     }
@@ -1394,6 +1757,10 @@ static void NET_SV_PumpSendQueue(net_client_t *client)
 
     cmd.latency = 0;
 
+    // Check if this client is the loopback (host) client
+    target_is_loopback = (client->addr
+        && client->addr->module == &net_loop_server_module);
+
     for (i = 0; i < NET_MAXPLAYERS; ++i) {
         net_client_recv_t *recvobj;
 
@@ -1404,18 +1771,39 @@ static void NET_SV_PumpSendQueue(net_client_t *client)
             continue;
         }
 
-        if (sv_players[i] == NULL || !recvwindow[recv_index][i].active) {
+        if (sv_players[i] == NULL || !ClientConnected(sv_players[i])) {
             cmd.playeringame[i] = false;
             continue;
         }
 
         cmd.playeringame[i] = true;
 
-        recvobj = &recvwindow[recv_index][i];
-
-        cmd.cmds[i] = recvobj->diff;
-
-        if (recvobj->latency > cmd.latency) cmd.latency = recvobj->latency;
+        if (recvwindow[recv_index][i].active) {
+            // Real data available — use it
+            recvobj = &recvwindow[recv_index][i];
+            cmd.cmds[i] = recvobj->diff;
+            if (recvobj->latency > cmd.latency) cmd.latency = recvobj->latency;
+        } else {
+            // Data missing for player i
+            if (!target_is_loopback && i == sv_loopback_player) {
+                // Sending to a remote client, but host data isn't ready yet.
+                // Wait — it'll arrive via loopback next frame (~28ms).
+                return;
+            }
+            // Fabricate for remote players (or host slot for loopback client).
+            // Zero movement (player stands still) but preserve buttons
+            // so attacks (BT_ATTACK) and use (BT_USE) are visible.
+            // Snapshots correct position/angle every ~57ms.
+            if (sv_player_has_sent[i]) {
+                cmd.cmds[i].diff = NET_TICDIFF_FORWARD | NET_TICDIFF_SIDE
+                                 | NET_TICDIFF_TURN | NET_TICDIFF_BUTTONS
+                                 | NET_TICDIFF_CONSISTANCY;
+                memset(&cmd.cmds[i].cmd, 0, sizeof(ticcmd_t));
+                cmd.cmds[i].cmd.buttons = sv_last_ticcmd[i].buttons;
+            } else {
+                memset(&cmd.cmds[i], 0, sizeof(net_ticdiff_t));
+            }
+        }
     }
 
     // printf("SV: %i: latency %i\n", client->player_number, cmd.latency);

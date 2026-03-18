@@ -161,10 +161,12 @@
     globalThis._serverElectionP.then(function(isServer) {
         console.log('VectorDoom: I am ' + (isServer ? 'the SERVER' : 'a CLIENT'));
 
-        // If server, keep responding to late-joining peers
+        // If server, periodically broadcast our server beacon
+        // so late-joining peers discover us immediately
         if (isServer) {
+            var beacon = makeServerResponse(thisAppStartedAt);
             setInterval(function() {
-                channel.send(whoIsServerReq);
+                channel.send(beacon);
             }, 3000);
         }
     });

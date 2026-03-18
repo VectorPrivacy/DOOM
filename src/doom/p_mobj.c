@@ -32,6 +32,7 @@
 #include "s_sound.h"
 
 #include "doomstat.h"
+#include "p_netsync.h"
 
 
 void G_PlayerReborn (int player);
@@ -450,8 +451,35 @@ P_NightmareRespawn (mobj_t* mobj)
 //
 // P_MobjThinker
 //
+extern void D_TickPlayerInterp(int player, mobj_t *mo);
+
 void P_MobjThinker (mobj_t* mobj)
 {
+    // Client-side: skip thinker for networked NPCs.
+    // Host is authoritative; clients apply snapshots directly.
+    if (netgame && net_client_player && mobj->net_id > 0)
+    {
+	// Still count down tics for smooth animation between snapshots
+	if (mobj->tics != -1)
+	{
+	    mobj->tics--;
+	    if (!mobj->tics)
+		P_SetMobjStateNoAction(mobj, mobj->state->nextstate);
+	}
+	return;
+    }
+
+    // Remote players in netgame: skip physics, use interpolation instead.
+    // Position is driven by exponential smoothing toward snapshot targets
+    // in D_TickPlayerInterp, not by DOOM's physics engine.
+    if (netgame && mobj->player
+	&& mobj->player != &players[consoleplayer])
+    {
+	D_TickPlayerInterp((int)(mobj->player - players), mobj);
+	// Still run animation state machine
+	goto do_states;
+    }
+
     // momentum movement
     if (mobj->momx
 	|| mobj->momy
@@ -467,13 +495,13 @@ void P_MobjThinker (mobj_t* mobj)
 	 || mobj->momz )
     {
 	P_ZMovement (mobj);
-	
+
 	// FIXME: decent NOP/NULL/Nil function pointer please.
 	if (mobj->thinker.function.acv == (actionf_v) (-1))
 	    return;		// mobj was removed
     }
 
-    
+do_states:
     // cycle through states,
     // calling action functions at transitions
     if (mobj->tics != -1)
@@ -565,8 +593,13 @@ P_SpawnMobj
 	mobj->z = z;
 
     mobj->thinker.function.acp1 = (actionf_p1)P_MobjThinker;
-	
+
     P_AddThinker (&mobj->thinker);
+
+    // Assign network sync ID for killable monsters and barrels
+    mobj->net_id = 0;
+    if ((mobj->flags & MF_COUNTKILL) || mobj->type == MT_BARREL)
+	P_NetAssignId(mobj);
 
     return mobj;
 }
@@ -583,6 +616,8 @@ int		iquetail;
 
 void P_RemoveMobj (mobj_t* mobj)
 {
+    P_NetRemoveId(mobj);
+
     if ((mobj->flags & MF_SPECIAL)
 	&& !(mobj->flags & MF_DROPPED)
 	&& (mobj->type != MT_INV)
@@ -702,12 +737,21 @@ void P_SpawnPlayer (mapthing_t* mthing)
 
     // not playing?
     if (!playeringame[mthing->type-1])
-	return;					
-		
+	return;
+
     p = &players[mthing->type-1];
 
     if (p->playerstate == PST_REBORN)
 	G_PlayerReborn (mthing->type-1);
+
+    // Clean up existing mobj if present (mid-game join safety).
+    // Without this, a second spawn would orphan the old mobj as a
+    // ghost body that stands still at the old spawn point.
+    if (p->mo) {
+	p->mo->player = NULL;
+	P_RemoveMobj(p->mo);
+	p->mo = NULL;
+    }
 
     x 		= mthing->x << FRACBITS;
     y 		= mthing->y << FRACBITS;
@@ -1003,7 +1047,12 @@ P_SpawnMissile
 
     th->momz = (dest->z - source->z) / dist;
     P_CheckMissileSpawn (th);
-	
+
+    // Queue for network sync: host broadcasts NPC missile spawns to clients
+    if (netgame && !net_client_player
+        && source->net_id > 0 && (th->flags & MF_MISSILE))
+	P_NetQueueMissile(th, source->net_id);
+
     return th;
 }
 

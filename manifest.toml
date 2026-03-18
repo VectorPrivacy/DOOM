@@ -1,2 +1,4 @@
-name = "VectorDoom"
+name = "DOOM"
+id = "doom"
 source_code_url = "https://github.com/JSKitty/VectorDoom"
+icon = "icon.png"
