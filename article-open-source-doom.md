@@ -336,7 +336,7 @@ Open Source DOOM is free, open-source, and available today.
 
 **Play it**: Download [Vector](https://vectorapp.io), open **Vector Nexus** (our decentralised in-app Mini App store), and find **DOOM** in the Multiplayer category. Send it to a friend or group chat and start fragging - no manual file management needed.
 
-**Read the code**: The full source is available at [github.com/nicholasopuni31/doom-wasm](https://github.com/JSKitty/VectorDoom).
+**Read the code**: The full source is available at [github.com/nicholasopuni31/doom-wasm](https://github.com/VectorPrivacy/DOOM).
 
 **Build on it**: The WebXDC realtime channel pattern we developed here works for any real-time multiplayer game.
 

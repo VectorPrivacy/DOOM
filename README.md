@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://vectorapp.io/blog/open-source-doom/">Blog Post</a> &middot;
   <a href="https://vectorapp.io">Download Vector</a> &middot;
-  <a href="https://github.com/JSKitty/VectorDoom/releases">Releases</a>
+  <a href="https://github.com/VectorPrivacy/DOOM/releases">Releases</a>
 </p>
 
 ---
