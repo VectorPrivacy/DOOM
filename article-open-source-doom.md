@@ -1,4 +1,4 @@
-# Open Source DOOM: How We Brought Real-Time Multiplayer to a 1993 Classic -No Servers Required
+# Open-Source DOOM: How We Brought Real-Time Multiplayer to a 1993 Classic -No Servers Required
 
 *By [JSKitty](https://jskitty.cat)*
 
@@ -10,7 +10,7 @@ We loved it. And then we thought: *what if we could take it further?*
 
 What if multiplayer DOOM didn't need Cloudflare's servers -or anyone's servers? What if it didn't need the internet at all? What if you could send a 4MB file to a friend in a chat message and be fragging each other within seconds, purely peer-to-peer, with the game feeling like a modern real-time shooter instead of a 1994 LAN party?
 
-That's what we built. We call it **Open Source DOOM**.
+That's what we built. We call it **Open-Source DOOM**.
 
 ---
 
@@ -46,7 +46,7 @@ We forked Cloudflare's doom-wasm project and rebuilt the entire networking stack
 
 Here's the before and after:
 
-| | Cloudflare's DOOM | Open Source DOOM |
+| | Cloudflare's DOOM | Open-Source DOOM |
 |---|---|---|
 | **Transport** | WebSockets → Cloudflare Edge | P2P gossip via Iroh (QUIC) |
 | **Server** | Durable Object (centralised) | Auto-elected from players (decentralised) |
@@ -93,7 +93,7 @@ For performance, Vector provides a **WebSocket fast-path**: the app connects to 
 
 ### The Simple Version
 
-In a normal online game, someone runs a server, and everyone connects to it. In Open Source DOOM, there *is* no predetermined server. When you open the game, all players silently negotiate who becomes the host. The person who opened the game first wins. This happens automatically in about three seconds, and you never even notice it.
+In a normal online game, someone runs a server, and everyone connects to it. In Open-Source DOOM, there *is* no predetermined server. When you open the game, all players silently negotiate who becomes the host. The person who opened the game first wins. This happens automatically in about three seconds, and you never even notice it.
 
 ### The Nerdy Version
 
@@ -326,13 +326,13 @@ None of this would exist without:
 - **[Iroh](https://iroh.computer/)** (by n0.computer) for the QUIC-based P2P gossip protocol that makes serverless real-time gaming possible
 - **The [WebXDC](https://webxdc.org/) community** for defining an open standard for sandboxed web apps in chat messages
 
-And a special note: the networking architecture of Open Source DOOM was designed and implemented as a collaboration between a human developer and an AI ([Claude](https://claude.ai), by Anthropic). Not generated and pasted -*collaborated on.* Hundreds of iterations, debugging sessions at 3am with hex dumps of gossip packets, heated debates about whether to interpolate angles (don't), and moments of genuine surprise when things just... worked.
+And a special note: the networking architecture of Open-Source DOOM was designed and implemented as a collaboration between a human developer and an AI ([Claude](https://claude.ai), by Anthropic). Not generated and pasted -*collaborated on.* Hundreds of iterations, debugging sessions at 3am with hex dumps of gossip packets, heated debates about whether to interpolate angles (don't), and moments of genuine surprise when things just... worked.
 
 ---
 
 ## Try It
 
-Open Source DOOM is free, open-source, and available today.
+Open-Source DOOM is free, open-source, and available today.
 
 **Play it**: Download [Vector](https://vectorapp.io), open **Vector Nexus** (our decentralised in-app Mini App store), and find **DOOM** in the Multiplayer category. Send it to a friend or group chat and start fragging - no manual file management needed.
 
@@ -340,7 +340,7 @@ Open Source DOOM is free, open-source, and available today.
 
 **Build on it**: The WebXDC realtime channel pattern we developed here works for any real-time multiplayer game.
 
-*If DOOM is "Hello, World" for computing, then Open Source DOOM is "Hello, World" for decentralised gaming.*
+*If DOOM is "Hello, World" for computing, then Open-Source DOOM is "Hello, World" for decentralised gaming.*
 
 ---
 
