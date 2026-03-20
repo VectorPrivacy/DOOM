@@ -164,6 +164,7 @@ typedef enum
     NET_PACKET_TYPE_PING,
     NET_PACKET_TYPE_PONG,
     NET_PACKET_TYPE_PLAYER_JOINED,
+    NET_PACKET_TYPE_WORLD_STATE,  // VectorDoom: merged snapshot+health+NPC
 } net_packet_type_t;
 
 typedef enum

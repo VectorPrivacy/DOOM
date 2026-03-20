@@ -8,6 +8,7 @@
     'use strict';
 
     var thisAppStartedAt = Date.now();
+    globalThis._appStartedAt = thisAppStartedAt;
 
     // Received packet queue — C code polls this via js_webxdc_recv
     // Packets stored as: [from(4)][doom_payload] (to field stripped)
@@ -72,7 +73,7 @@
         // --- Server election messages ---
         if (isServerRequest(data)) {
             if (serverElected && amIServer) {
-                channel.send(makeServerResponse(thisAppStartedAt));
+                trySend(makeServerResponse(thisAppStartedAt));
             }
             return;
         }
@@ -80,8 +81,17 @@
         if (isServerResponse(data)) {
             var respTime = new Float64Array(data.buffer, 8, 1)[0];
             if (respTime < thisAppStartedAt) {
-                // They started earlier — they're the server
-                resolveAndCleanUp(false);
+                if (!serverElected) {
+                    // Pre-election: they started earlier, yield
+                    resolveAndCleanUp(false);
+                } else if (amIServer) {
+                    // Post-election demotion: we self-elected as server,
+                    // but an earlier server just appeared (slow gossip).
+                    // Yield by reloading — the new connection will find the
+                    // real server and become a client.
+                    console.log('VectorDoom: yielding to earlier server (slow gossip recovery)');
+                    if (globalThis.location) globalThis.location.reload();
+                }
             }
             // If we started earlier, ignore their claim
             return;
@@ -93,15 +103,19 @@
         // Read destination UID (little-endian uint32 at offset 0)
         var destUID = data[0] | (data[1] << 8) | (data[2] << 16) | ((data[3] << 24) >>> 0);
 
-        // Filter: only accept packets addressed to our instanceUID
-        // _doomInstanceUID is 0 until C code initializes — drop packets until then
-        if (globalThis._doomInstanceUID === 0) return;
-        if (destUID !== globalThis._doomInstanceUID && destUID !== 0) return;
-
         // Deliver [from(4)][doom_payload] to C (strip the to field)
         var delivered = new Uint8Array(data.length - 4);
         delivered.set(data.subarray(4));
 
+        if (globalThis._doomInstanceUID === 0) {
+            // C code hasn't initialized yet — buffer packets for later.
+            // On slow mobile devices, SYN packets can arrive before InitWebXDC runs.
+            if (!globalThis._webxdcEarlyQueue) globalThis._webxdcEarlyQueue = [];
+            globalThis._webxdcEarlyQueue.push({ destUID: destUID, data: delivered });
+            return;
+        }
+
+        if (destUID !== globalThis._doomInstanceUID && destUID !== 0) return;
         globalThis._webxdcRecvQueue.push(delivered);
     }
 
@@ -146,17 +160,21 @@
     // --- Server election ---
     var whoIsServerReq = new Uint8Array([42, 42, 42, 42]);
 
-    // Broadcast "who is server?" every 300ms
-    channel.send(whoIsServerReq);
+    // Broadcast "who is server?" every 500ms
+    function trySend(data) {
+        try { channel.send(data); } catch(e) { /* channel not ready yet */ }
+    }
+    trySend(whoIsServerReq);
     var requestInterval = setInterval(function() {
-        channel.send(whoIsServerReq);
-    }, 300);
+        if (!serverElected) trySend(whoIsServerReq);
+    }, 500);
 
-    // If no earlier server found within 3 seconds, we're it
+    // If no earlier server found within 5 seconds, we're it
+    // (Iroh gossip peer discovery can take a few seconds)
     var electionTimeout = setTimeout(function() {
-        channel.send(makeServerResponse(thisAppStartedAt));
+        trySend(makeServerResponse(thisAppStartedAt));
         resolveAndCleanUp(true);
-    }, 3000);
+    }, 5000);
 
     globalThis._serverElectionP.then(function(isServer) {
         console.log('VectorDoom: I am ' + (isServer ? 'the SERVER' : 'a CLIENT'));
@@ -165,9 +183,10 @@
         // so late-joining peers discover us immediately
         if (isServer) {
             var beacon = makeServerResponse(thisAppStartedAt);
-            setInterval(function() {
-                channel.send(beacon);
-            }, 3000);
+            var beaconInterval = setInterval(function() {
+                if (!globalThis._webxdcChannel) { clearInterval(beaconInterval); return; }
+                trySend(beacon);
+            }, 5000);
         }
     });
 

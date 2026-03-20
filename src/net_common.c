@@ -30,9 +30,9 @@
 #include "net_packet.h"
 #include "net_structrw.h"
 
-// connections time out after 30 seconds
-// we changed this for websockets
-#define CONNECTION_TIMEOUT_LEN 4
+// connections time out after 60 seconds
+// WebXDC/Iroh gossip can have 10-30s packet bursts; be very patient
+#define CONNECTION_TIMEOUT_LEN 60
 
 // maximum time between sending packets
 

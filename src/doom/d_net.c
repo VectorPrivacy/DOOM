@@ -54,6 +54,10 @@ ticcmd_t *netcmds;
 
 void P_RemoveMobj(mobj_t *mobj);
 
+// Declared in d_loop.c — we need to flip these for host migration
+extern boolean net_client_player;
+void D_PromoteToHost(void);
+
 static void PlayerQuitGame(player_t *player)
 {
     static char exitmsg[80];
@@ -72,15 +76,19 @@ static void PlayerQuitGame(player_t *player)
     players[consoleplayer].message = exitmsg;
 
     // Remove the player's mobj to avoid ghost bodies.
-    // Without this, a mid-game join that gets briefly reverted by old tic
-    // data leaves an orphaned body in the world.
     if (player->mo) {
         player->mo->player = NULL;
         P_RemoveMobj(player->mo);
         player->mo = NULL;
     }
 
-    // TODO: check if it is sensible to do this:
+    // VectorDoom: Host migration — if the host left and we're a client,
+    // promote ourselves to host. NPCs resume local physics, damage applies
+    // locally, doors/switches work. Game continues seamlessly.
+    if (net_client_player && player_num == 0) {
+        D_PromoteToHost();
+        players[consoleplayer].message = "Host left. You are now the host.";
+    }
 
     if (demorecording) {
         G_CheckDemoStatus();
@@ -130,7 +138,9 @@ static int last_received_attack[MAXPLAYERS];
 // movement responsive. Physics (P_XYMovement/P_ZMovement) is skipped for
 // remote players since interpolation drives their position directly.
 
-#define INTERP_FRAC  39322  // ~60% of FRACUNIT (0.6 * 65536)
+#define INTERP_FRAC  16384  // ~25% of FRACUNIT (0.25 * 65536)
+// 25% per tic = natural ease-out: fast when far, slows as it approaches.
+// Converges in ~8-10 tics (~230-285ms) — smooth even at 500ms+ ping.
 #define TELEPORT_THRESH (128 * FRACUNIT)  // instant teleport above this
 
 typedef struct {
@@ -164,8 +174,10 @@ static void BuildPlayerSnapshot(int player, int *data) {
 
 // Attack animation lock: prevents local logic from overriding the
 // attack animation for ~250ms after it's triggered by a snapshot.
-#define ATTACK_LOCK_TICS 8
+#define ATTACK_LOCK_TICS 8      // minimum tics between new attack triggers
+#define ATTACK_STUCK_TICS 35    // force idle if stuck in attack for 1 second
 static int remote_attack_tics[MAXPLAYERS];
+static int remote_attack_stuck[MAXPLAYERS];  // counts how long stuck in attack
 
 // Weapon fire sounds indexed by weapontype_t
 static const int weapon_fire_sfx[] = {
@@ -196,18 +208,16 @@ static void ApplyPlayerSnapshot(int player, int *data) {
     // Store remote player's self-reported ping
     player_pings[player] = data[8];
 
-    // Check for large position delta (teleport/respawn): instant snap
-    if (abs(data[0] - mo->x) > TELEPORT_THRESH
-        || abs(data[1] - mo->y) > TELEPORT_THRESH
-        || !interp->active)
-    {
+    // First snapshot or respawn: instant snap to position
+    if (!interp->active) {
         P_UnsetThingPosition(mo);
         mo->x = data[0];  mo->y = data[1];  mo->z = data[2];
         P_SetThingPosition(mo);
         mo->angle = (unsigned int)data[3];
     }
 
-    // Set interpolation target (don't move mobj - smoothing handles it)
+    // Update interpolation target — D_TickPlayerInterp handles all movement.
+    // Never teleport on regular snapshots; let smoothing close the gap.
     interp->target_x = data[0];
     interp->target_y = data[1];
     interp->target_z = data[2];
@@ -217,38 +227,22 @@ static void ApplyPlayerSnapshot(int player, int *data) {
     interp->momz = data[6];
     interp->active = true;
 
-    // Set momentum on mobj (used for animation state detection)
+    // Update mobj momentum (drives walk/idle animation state machine)
     mo->momx = data[4];  mo->momy = data[5];  mo->momz = data[6];
 
-    // Animation lock: if active, force attack state if local logic overrode it
-    if (remote_attack_tics[player] > 0) {
-        if (mo->state != &states[S_PLAY_ATK1]
-            && mo->state != &states[S_PLAY_ATK2])
-        {
-            P_SetMobjStateNoAction(mo, S_PLAY_ATK2);
-        }
-        remote_attack_tics[player] -= 2;
-    }
-
-    // Detect attack from snapshot
+    // Detect attack from snapshot — trigger animation + sound + lock.
+    // Lock countdown happens in D_TickPlayerInterp (every tic), not here.
     if (data[7] > 0) {
-        // New attack: trigger animation + sound + lock
         if (remote_attack_tics[player] <= 0) {
             int weapon = data[7] - 1;
-            P_SetMobjState(mo, S_PLAY_ATK1);
+            // Start at ATK2 (muzzle flash, fullbright) → chains to ATK1 → PLAY.
+            // Starting at ATK1 skips the flash entirely (ATK1 → PLAY directly).
+            P_SetMobjState(mo, S_PLAY_ATK2);
             if (weapon >= 0 && weapon < (int)(sizeof(weapon_fire_sfx)/sizeof(weapon_fire_sfx[0]))
                 && weapon_fire_sfx[weapon] != sfx_None)
                 S_StartSound(mo, weapon_fire_sfx[weapon]);
         }
         remote_attack_tics[player] = ATTACK_LOCK_TICS;
-    }
-
-    // Return to idle: no attack, no momentum, lock expired, not already idle
-    if (data[7] == 0 && remote_attack_tics[player] <= 0
-        && data[4] == 0 && data[5] == 0
-        && mo->state != &states[S_PLAY])
-    {
-        P_SetMobjStateNoAction(mo, S_PLAY);
     }
 }
 
@@ -279,10 +273,49 @@ void D_TickPlayerInterp(int player, mobj_t *mo)
     P_SetThingPosition(mo);
 
     mo->z += FixedMul(dz, INTERP_FRAC);
-    // Note: angle is NOT interpolated here. P_MovePlayer already applies
-    // the ticcmd angleturn each tic, which is deterministic and synced.
-    // Interpolating toward a stale snapshot angle fights the ticcmd and
-    // causes the remote player to appear rotated ~90 degrees wrong.
+
+    // VectorDoom: Angle IS interpolated from snapshots now.
+    // Ticcmd-based rotation is zeroed for remote players, so there's no
+    // competing system. Snapshots are the sole authority for remote angle.
+    // Use shift-based smoothing to avoid int32 overflow on angle_diff * N.
+    // angle_t is unsigned, subtraction wraps correctly for shortest path,
+    // casting to int gives signed delta. Shift right by 2 = 25% smoothing
+    // (matches position interp — natural ease-out for turning too).
+    mo->angle += (angle_t)((int)(interp->target_angle - mo->angle) >> 2);
+
+    // Movement animation: set run/idle based on momentum.
+    // P_MovePlayer is skipped for remote players, so we drive it here.
+    // Don't override attack animations (ATK1/ATK2) or death/pain.
+    {
+        boolean moving = (interp->momx != 0 || interp->momy != 0);
+        boolean in_idle = (mo->state == &states[S_PLAY]);
+        boolean in_run = (mo->state >= &states[S_PLAY_RUN1]
+                       && mo->state <= &states[S_PLAY_RUN4]);
+
+        if (moving && in_idle) {
+            P_SetMobjStateNoAction(mo, S_PLAY_RUN1);
+        } else if (!moving && in_run) {
+            P_SetMobjStateNoAction(mo, S_PLAY);
+        }
+    }
+
+    // Attack lock countdown (prevents retrigger spam)
+    if (remote_attack_tics[player] > 0) {
+        remote_attack_tics[player]--;
+    }
+
+    // Safety: force idle if stuck in attack state for too long (1 second).
+    // Normal flow: DOOM state machine transitions ATK1 → ATK2 → PLAY on its own.
+    // This only fires if the state machine gets stuck (e.g. lag, desync).
+    if (mo->state == &states[S_PLAY_ATK1] || mo->state == &states[S_PLAY_ATK2]) {
+        remote_attack_stuck[player]++;
+        if (remote_attack_stuck[player] > ATTACK_STUCK_TICS) {
+            P_SetMobjStateNoAction(mo, S_PLAY);
+            remote_attack_stuck[player] = 0;
+        }
+    } else {
+        remote_attack_stuck[player] = 0;
+    }
 }
 
 // Host-authoritative health: host broadcasts all players' health + state.

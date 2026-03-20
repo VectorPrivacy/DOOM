@@ -110,6 +110,8 @@ else
 @PROGRAM_PREFIX@doom_SOURCES=$(SOURCE_FILES_WITH_DEH)
 endif
 
+@PROGRAM_PREFIX@doom_LDFLAGS = \
+    -s EXPORTED_FUNCTIONS="['_main','_inject_key_event','_inject_mouse_motion']"
 @PROGRAM_PREFIX@doom_LDADD = doom/libdoom.a $(EXTRA_LIBS)
 
 # Make "make" aware of convenience libraries in subdirectories

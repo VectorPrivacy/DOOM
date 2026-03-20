@@ -22,7 +22,7 @@
 #include "net_webxdc.h"
 #include "z_zone.h"
 
-#define MAX_QUEUE_SIZE 64
+#define MAX_QUEUE_SIZE 512
 
 extern uint32_t instanceUID;
 
@@ -130,9 +130,22 @@ static boolean InitWebXDC(void)
     }
 
     // Register our instanceUID with the JS layer for packet filtering
+    // Also drain any packets that arrived before C code initialized
     EM_ASM({
         globalThis._doomInstanceUID = $0;
         console.log("doom: registered instanceUID=" + $0);
+        // Flush early queue — packets that arrived before UID was set
+        var eq = globalThis._webxdcEarlyQueue;
+        if (eq && eq.length > 0) {
+            console.log("doom: flushing " + eq.length + " early packets");
+            for (var i = 0; i < eq.length; i++) {
+                var p = eq[i];
+                if (p.destUID === $0 || p.destUID === 0) {
+                    globalThis._webxdcRecvQueue.push(p.data);
+                }
+            }
+            globalThis._webxdcEarlyQueue = null;
+        }
     }, instanceUID);
 
     inittedWebXDC = true;

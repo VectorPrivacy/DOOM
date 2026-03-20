@@ -818,7 +818,9 @@ void G_Ticker(void)
             }
 
             if (netgame && !netdemo && !(gametic % ticdup)) {
-                if (gametic > BACKUPTICS && consistancy[i][buf] != cmd->consistancy) {
+                // VectorDoom: consistency check disabled — meaningless with
+                // snapshot-based sync (fabricated ticcmds always have consistancy=0)
+                if (0) {
                     printf("consistency warning: player %d tic %d (%i vs %i)\n",
                            i, gametic, cmd->consistancy, consistancy[i][buf]);
                 }

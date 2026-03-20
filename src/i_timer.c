@@ -63,7 +63,6 @@ int I_GetTimeMS(void)
 
 void I_Sleep(int ms)
 {
-    // SDL_Delay(ms);
     emscripten_sleep(ms);
 }
 

@@ -38,5 +38,9 @@ void NET_SV_AddModule(net_module_t *module);
 
 void NET_SV_RegisterWithMaster(void);
 
+// VectorDoom: host migration helpers
+void NET_SV_SetState(int state);
+boolean NET_SV_IsInitialized(void);
+
 #endif /* #ifndef NET_SERVER_H */
 

@@ -411,6 +411,14 @@ static unsigned int NET_SV_LatestAcknowledged(void)
 
     for (i = 0; i < MAXNETNODES; ++i) {
         if (ClientConnected(&clients[i])) {
+            // VectorDoom: only consider loopback clients for the ack floor.
+            // Remote clients don't receive tics (PumpSendQueue skips them),
+            // so their acknowledged never advances. Including them would
+            // stall AdvanceWindow and block the entire server.
+            boolean is_loopback = (clients[i].addr
+                && clients[i].addr->module == &net_loop_server_module);
+            if (!is_loopback) continue;
+
             if (clients[i].acknowledged < lowtic) {
                 lowtic = clients[i].acknowledged;
             }
@@ -1380,6 +1388,28 @@ void NET_SV_SendQueryResponse(net_addr_t *addr)
     NET_FreePacket(reply);
 }
 
+// VectorDoom: generic raw packet forwarder — copies remaining packet bytes
+// to all other connected clients with a new packet type header.
+static void NET_SV_ForwardRawPacket(net_packet_t *packet, net_client_t *sender, int ptype)
+{
+    unsigned int i;
+    // Snapshot remaining bytes after the type header (already consumed)
+    int remaining = packet->len - packet->pos;
+    unsigned char *raw = packet->data + packet->pos;
+
+    for (i = 0; i < MAXNETNODES; ++i) {
+        net_packet_t *fwd;
+        if (!ClientConnected(&clients[i]) || &clients[i] == sender) continue;
+
+        fwd = NET_NewPacket(remaining + 4);
+        NET_WriteInt16(fwd, ptype);
+        memcpy(fwd->data + fwd->len, raw, remaining);
+        fwd->len += remaining;
+        NET_Conn_SendPacket(&clients[i].connection, fwd);
+        NET_FreePacket(fwd);
+    }
+}
+
 // Forward a player state snapshot to all other connected clients
 
 static void NET_SV_ForwardPlayerState(net_packet_t *packet, net_client_t *sender) {
@@ -1664,6 +1694,9 @@ static void NET_SV_Packet(net_packet_t *packet, net_addr_t *addr)
         case NET_PACKET_TYPE_USE_EVENT:
             NET_SV_HandleUseEvent(packet, client);
             break;
+        case NET_PACKET_TYPE_WORLD_STATE:
+            NET_SV_ForwardRawPacket(packet, client, NET_PACKET_TYPE_WORLD_STATE);
+            break;
         case NET_PACKET_TYPE_CHAT_MSG:
             NET_SV_HandleChatMessage(packet, client);
             break;
@@ -1702,10 +1735,20 @@ static void NET_SV_PumpSendQueue(net_client_t *client)
     int starttic, endtic;
     boolean target_is_loopback;
 
+    // VectorDoom: check loopback early — remote clients don't receive tics.
+    target_is_loopback = (client->addr
+        && client->addr->module == &net_loop_server_module);
+
+    // VectorDoom: skip entirely for remote clients. They fabricate tics
+    // locally and sync via snapshots. Don't touch sendseq or acknowledged.
+    if (!target_is_loopback) {
+        return;
+    }
+
     // If a client has not sent any acknowledgments for a while,
     // wait until they catch up.
 
-    if (client->sendseq - NET_SV_LatestAcknowledged() > 40) {
+    if (client->sendseq - NET_SV_LatestAcknowledged() > 200) {
         return;
     }
 
@@ -1757,9 +1800,7 @@ static void NET_SV_PumpSendQueue(net_client_t *client)
 
     cmd.latency = 0;
 
-    // Check if this client is the loopback (host) client
-    target_is_loopback = (client->addr
-        && client->addr->module == &net_loop_server_module);
+    // target_is_loopback already set at top of function
 
     for (i = 0; i < NET_MAXPLAYERS; ++i) {
         net_client_recv_t *recvobj;
@@ -1812,14 +1853,13 @@ static void NET_SV_PumpSendQueue(net_client_t *client)
 
     client->sendqueue[client->sendseq % BACKUPTICS] = cmd;
 
-    // Transmit the new tic to the client
+    // Transmit the new tic to the loopback client (host)
 
     starttic = client->sendseq - sv_settings.extratics;
     endtic = client->sendseq;
 
     if (starttic < 0) starttic = 0;
 
-    NET_Log("server: send tics %d-%d to %s", starttic, endtic, NET_AddrToString(client->addr));
     NET_SV_SendTics(client, starttic, endtic);
 
     ++client->sendseq;
@@ -1847,37 +1887,13 @@ void NET_SV_CheckDeadlock(net_client_t *client)
 
     // If we haven't received anything for a long time, it may be a deadlock.
 
-    if (nowtime - client->last_gamedata_time > 1000) {
-        NET_Log("server: no gamedata from %s since %d - deadlock?", NET_AddrToString(client->addr),
-                client->last_gamedata_time);
-
-        // Search the receive window for the first tic we are expecting
-        // from this player.
-
-        for (i = 0; i < BACKUPTICS; ++i) {
-            if (!recvwindow[client->player_number][i].active) {
-                NET_Log("server: deadlock: sending resend request for %d-%d", recvwindow_start + i,
-                        recvwindow_start + i + 5);
-
-                // Found a tic we haven't received.  Send a resend request.
-
-                NET_SV_SendResendRequest(client, recvwindow_start + i, recvwindow_start + i + 5);
-
-                client->last_gamedata_time = nowtime;
-                break;
-            }
-        }
-
-        // If we sent a resend request to break the deadlock, also trigger a
-        // resend of any tics we have sitting in the send queue, in case the
-        // client is blocked waiting on tics from us that have been lost.
-        // This fixes deadlock with some older clients which do not send
-        // resends to break deadlock.
-        if (i < BACKUPTICS && client->sendseq > client->acknowledged) {
-            NET_Log("server: also resending tics %d-%d to break deadlock", client->acknowledged, client->sendseq - 1);
-            NET_SV_SendTics(client, client->acknowledged, client->sendseq - 1);
-        }
-    }
+    // VectorDoom: Resend/deadlock detection disabled.
+    // Tic transfer is no longer required for gameplay — the snapshot system
+    // is the sole authority for remote player state. Flooding the Iroh gossip
+    // channel with resend requests and tic backlogs only makes lag worse.
+    // The connection timeout (60s) handles genuinely dead connections.
+    (void)nowtime;
+    (void)i;
 }
 
 // Called when all players have disconnected.  Return to listening for
@@ -1915,6 +1931,14 @@ static void NET_SV_RunClient(net_client_t *client)
     // Is this client disconnected?
 
     if (client->connection.state == NET_CONN_STATE_DISCONNECTED) {
+        // VectorDoom: notify the game logic to remove this player.
+        // With tic transfer disabled, the ingame flag never goes false
+        // through ticcmds, so we must explicitly trigger PlayerQuitGame.
+        if (client->player_number >= 0 && client->player_number < NET_MAXPLAYERS) {
+            extern void D_PlayerDisconnected(int player);
+            D_PlayerDisconnected(client->player_number);
+        }
+
         client->active = false;
 
         // If we were about to start a game, any player disconnecting
@@ -1972,6 +1996,17 @@ void NET_SV_AddModule(net_module_t *module)
     NET_AddModule(server_context, module);
 }
 
+// VectorDoom: allow d_loop.c to set server state for host migration
+void NET_SV_SetState(int state)
+{
+    server_state = state;
+}
+
+boolean NET_SV_IsInitialized(void)
+{
+    return server_initialized;
+}
+
 // Initialize server and wait for connections
 
 void NET_SV_Init(void)
@@ -2020,7 +2055,7 @@ void NET_SV_Run(void)
     // printf("net_server.c :: while(NET_RecvPacket())\n");
 
     while (NET_RecvPacket(server_context, &addr, &packet)) {
-        // printf("net_server.c :: NET_SV_Packet() %d\n", (IPaddress *)nip->host);
+        printf("doom: SV got packet len=%d from %s\n", packet->len, NET_AddrToString(addr));
         NET_SV_Packet(packet, addr);
         // printf("net_server.c :: NET_FreePacket()\n");
         NET_FreePacket(packet);

@@ -600,67 +600,17 @@ static void NET_CL_SendResendRequest(int start, int end)
 
 static void NET_CL_CheckResends(void)
 {
-    int i;
-    int resend_start, resend_end;
     unsigned int nowtime;
-    boolean maybe_deadlocked;
+
+    // VectorDoom: Resend requests disabled.
+    // Tic transfer is no longer required for gameplay — the snapshot system
+    // is the sole authority for remote player state. Resend flooding only
+    // congests the Iroh gossip channel during lag spikes.
 
     nowtime = I_GetTimeMS();
-    maybe_deadlocked = nowtime - gamedata_recv_time > 1000;
 
-    resend_start = -1;
-    resend_end = -1;
-
-    for (i = 0; i < BACKUPTICS; ++i) {
-        net_server_recv_t *recvobj;
-        boolean need_resend;
-
-        recvobj = &recvwindow[i];
-
-        // if need_resend is true, this tic needs another retransmit
-        // request (300ms timeout)
-
-        need_resend = !recvobj->active && recvobj->resend_time != 0 && nowtime > recvobj->resend_time + 300;
-
-        // if no game data has been received in a long time, we may be in
-        // a deadlock scenario where tics from the server have been lost, so
-        // we've stopped generating any more, so the server isn't sending us
-        // any, so we don't get any to trigger a resend request. So force the
-        // first few tics in the receive window to be requested.
-        if (i == 0 && !recvobj->active && recvobj->resend_time == 0 && maybe_deadlocked) {
-            need_resend = true;
-        }
-
-        if (need_resend) {
-            // Start a new run of resend tics?
-
-            if (resend_start < 0) {
-                resend_start = i;
-            }
-
-            resend_end = i;
-        }
-        else if (resend_start >= 0) {
-            // End of a run of resend tics
-            NET_Log("client: resend request timed out for %d-%d (%d)", recvwindow_start + resend_start,
-                    recvwindow_start + resend_end, recvwindow[resend_start].resend_time);
-            NET_CL_SendResendRequest(recvwindow_start + resend_start, recvwindow_start + resend_end);
-            resend_start = -1;
-        }
-    }
-
-    if (resend_start >= 0) {
-        NET_Log("client: resend request timed out for %d-%d (%d)", recvwindow_start + resend_start,
-                recvwindow_start + resend_end, recvwindow[resend_start].resend_time);
-        NET_CL_SendResendRequest(recvwindow_start + resend_start, recvwindow_start + resend_end);
-    }
-
-    // We have received some data from the server and not acknowledged
-    // it yet.  Normally this gets acknowledged when we send our game
-    // data, but if the client is a drone we need to do this.
-
+    // Still send ACKs so the server knows we're alive
     if (need_to_acknowledge && nowtime - gamedata_recv_time > 200) {
-        NET_Log("client: no game data received since %d: triggering ack", gamedata_recv_time);
         NET_CL_SendGameDataACK();
     }
 }
@@ -936,6 +886,131 @@ void NET_CL_SendNPCState(unsigned char *data, int len) {
     NET_FreePacket(packet);
 }
 
+// VectorDoom: unified world state — compact encoding.
+// Player snapshot: x(4) y(4) z(4) angle(2) momx(2) momy(2) momz(2) attack(1) latency(2) = 23 bytes
+// Health auth per player: health(2) state(1) kills(2) items(2) secrets(2) = 9 bytes × 4 = 36 bytes
+// Total fixed: ~65 bytes (was ~128). Plus NPC data (already compact).
+
+void NET_CL_SendWorldState(int player, int gametic_val,
+                           int *snap_data,
+                           boolean is_host_flag,
+                           int *health_data, int num_players,
+                           unsigned char *npc_data, int npc_len)
+{
+    net_packet_t *packet;
+    int i;
+    if (client_state != CLIENT_STATE_IN_GAME) return;
+
+    packet = NET_NewPacket(128 + (npc_len > 0 ? npc_len : 0));
+    NET_WriteInt16(packet, NET_PACKET_TYPE_WORLD_STATE);
+
+    // Player snapshot — compact encoding
+    NET_WriteInt8(packet, player);
+    NET_WriteInt32(packet, gametic_val);
+    NET_WriteInt32(packet, (unsigned int)snap_data[0]);  // x (full precision)
+    NET_WriteInt32(packet, (unsigned int)snap_data[1]);  // y (full precision)
+    NET_WriteInt32(packet, (unsigned int)snap_data[2]);  // z (full precision)
+    NET_WriteInt8(packet, (unsigned int)snap_data[3] >> 24);  // angle top 8 bits (~1.4° steps)
+    NET_WriteInt16(packet, (unsigned int)((snap_data[4] + 128) >> 8));  // momx /256
+    NET_WriteInt16(packet, (unsigned int)((snap_data[5] + 128) >> 8));  // momy /256
+    NET_WriteInt16(packet, (unsigned int)((snap_data[6] + 128) >> 8));  // momz /256
+    NET_WriteInt8(packet, snap_data[7]);   // attack_weapon (0-9)
+    NET_WriteInt16(packet, snap_data[8]);  // latency ms
+
+    // Host authority section
+    NET_WriteInt8(packet, is_host_flag ? 1 : 0);
+    if (is_host_flag) {
+        // Health auth — compact: int16 health, uint8 state, uint16 kills/items/secrets
+        NET_WriteInt8(packet, num_players);
+        for (i = 0; i < num_players; i++) {
+            NET_WriteInt16(packet, (unsigned int)health_data[i * 5]);      // health
+            NET_WriteInt8(packet, health_data[i * 5 + 1]);                 // playerstate
+            NET_WriteInt16(packet, (unsigned int)health_data[i * 5 + 2]);  // killcount
+            NET_WriteInt16(packet, (unsigned int)health_data[i * 5 + 3]);  // itemcount
+            NET_WriteInt16(packet, (unsigned int)health_data[i * 5 + 4]);  // secretcount
+        }
+        // NPC state (already compact binary)
+        NET_WriteInt16(packet, npc_len);
+        for (i = 0; i < npc_len; i++)
+            NET_WriteInt8(packet, npc_data[i]);
+    }
+
+    NET_Conn_SendPacket(&client_connection, packet);
+    NET_FreePacket(packet);
+}
+
+extern void D_ApplyPlayerSnapshot(int player, int gametic_snap, int *data);
+extern void D_ApplyHealthAuth(int *data);
+extern void D_ApplyNPCState(unsigned char *data, int len);
+
+static void NET_CL_ParseWorldState(net_packet_t *packet) {
+    unsigned int player, tick, is_host_pkt, val;
+    int snap_data[9], i;
+
+    // VectorDoom: count world state as "gamedata received" to keep the
+    // connection alive. Without this, clients disconnect if tic flow is
+    // disabled (gamedata_recv_time never updates).
+    gamedata_recv_time = I_GetTimeMS();
+
+    // Player snapshot — compact decoding
+    if (!NET_ReadInt8(packet, &player)) return;
+    if (!NET_ReadInt32(packet, &tick)) return;
+    if (!NET_ReadSInt32(packet, &snap_data[0])) return;  // x
+    if (!NET_ReadSInt32(packet, &snap_data[1])) return;  // y
+    if (!NET_ReadSInt32(packet, &snap_data[2])) return;  // z
+    if (!NET_ReadInt8(packet, &val)) return;
+    snap_data[3] = (int)(val << 24);  // angle: restore 8-bit to 32-bit
+    if (!NET_ReadInt16(packet, &val)) return;
+    snap_data[4] = (int)((short)val) << 8;  // momx: restore ×256
+    if (!NET_ReadInt16(packet, &val)) return;
+    snap_data[5] = (int)((short)val) << 8;  // momy: restore ×256
+    if (!NET_ReadInt16(packet, &val)) return;
+    snap_data[6] = (int)((short)val) << 8;  // momz: restore ×256
+    if (!NET_ReadInt8(packet, &val)) return;
+    snap_data[7] = val;  // attack_weapon
+    if (!NET_ReadInt16(packet, &val)) return;
+    snap_data[8] = val;  // latency
+
+    if (player < NET_MAXPLAYERS) {
+        D_ApplyPlayerSnapshot(player, tick, snap_data);
+    }
+
+    // Host authority section
+    if (!NET_ReadInt8(packet, &is_host_pkt)) return;
+    if (is_host_pkt) {
+        // Health auth — compact decoding
+        unsigned int num_players;
+        int health_data[NET_MAXPLAYERS * 5];
+        if (!NET_ReadInt8(packet, &num_players)) return;
+        if (num_players > NET_MAXPLAYERS) return;
+        for (i = 0; i < (int)num_players; i++) {
+            if (!NET_ReadInt16(packet, &val)) return;
+            health_data[i * 5] = (int)(short)val;      // health (signed)
+            if (!NET_ReadInt8(packet, &val)) return;
+            health_data[i * 5 + 1] = val;               // playerstate
+            if (!NET_ReadInt16(packet, &val)) return;
+            health_data[i * 5 + 2] = val;               // killcount
+            if (!NET_ReadInt16(packet, &val)) return;
+            health_data[i * 5 + 3] = val;               // itemcount
+            if (!NET_ReadInt16(packet, &val)) return;
+            health_data[i * 5 + 4] = val;               // secretcount
+        }
+        D_ApplyHealthAuth(health_data);
+
+        // NPC state
+        unsigned int npc_len;
+        if (!NET_ReadInt16(packet, &npc_len)) return;
+        if (npc_len > 0 && npc_len < 4096) {
+            unsigned char npc_buf[4096];
+            for (i = 0; i < (int)npc_len; i++) {
+                if (!NET_ReadInt8(packet, &val)) return;
+                npc_buf[i] = (unsigned char)val;
+            }
+            D_ApplyNPCState(npc_buf, npc_len);
+        }
+    }
+}
+
 void NET_CL_SendNPCDamage(int source_player, unsigned short target_net_id, int damage) {
     net_packet_t *packet;
     if (client_state != CLIENT_STATE_IN_GAME) return;
@@ -1099,6 +1174,10 @@ static void NET_CL_ParsePacket(net_packet_t *packet)
 
         case NET_PACKET_TYPE_NPC_STATE:
             NET_CL_ParseNPCState(packet);
+            break;
+
+        case NET_PACKET_TYPE_WORLD_STATE:
+            NET_CL_ParseWorldState(packet);
             break;
 
         case NET_PACKET_TYPE_CHAT_MSG:

@@ -53,14 +53,17 @@ typedef struct {
 } ticcmd_set_t;
 
 // Maximum time that we wait in TryRunTics() for netgame data to be
-// received before we bail out and render a frame anyway.
-// VectorDoom: with non-blocking server, stalls should be rare.
-// Keep low so the client doesn't hang waiting for tics.
-#define MAX_NETGAME_STALL_TICS 10
+// received before we fabricate missing tics and advance anyway.
+// VectorDoom: we NEVER block the game loop. If remote tics are missing,
+// we repeat the last known ticcmd and let the snapshot system correct drift.
+#define MAX_NETGAME_STALL_TICS 2
 
-// Send a state snapshot every N tics for desync correction.
-// 2 tics = ~57ms at 35fps. Physics dead-reckons between snapshots.
-#define SNAPSHOT_INTERVAL 2
+// Send a state snapshot every N tics.
+// 3 = every ~86ms (~12/s). Momentum extrapolation fills gaps smoothly.
+// Lower = more bandwidth, higher = more reliance on extrapolation.
+// At 140 msgs/s the gossip channel chokes on high-ping connections;
+// 12/s * 3 packet types = ~36 msgs/s total — much healthier.
+#define SNAPSHOT_INTERVAL 3
 
 //
 // gametic is the tic about to (or currently being) run
@@ -80,6 +83,11 @@ static int maketic;
 // The number of complete tics received from the server so far.
 
 static int recvtic;
+
+// VectorDoom: true once we've received at least one real tic from the
+// server. Fabrication is unsafe before this because game state (player
+// mobjs, level data) may not be fully synchronized yet.
+static boolean received_first_tic = false;
 
 // The number of tics that have been run (using RunTic) so far.
 
@@ -249,6 +257,49 @@ void NetUpdate(void)
     }
 }
 
+// VectorDoom: Host migration — promote this client to host.
+// Called from PlayerQuitGame when the host (player 0) disconnects.
+// Flips authority flags, starts server infrastructure, and tells JS
+// to broadcast server beacons so new players can discover and join.
+void D_PromoteToHost(void)
+{
+    extern boolean net_client_player;
+
+    // 1. Flip game logic flags
+    is_host = true;
+    net_client_player = false;
+
+    // 2. Start server infrastructure so new clients can connect
+    if (!NET_SV_IsInitialized()) {
+        NET_SV_Init();
+        NET_SV_AddModule(&net_webxdc_module);
+        NET_SV_AddModule(&net_loop_server_module);
+    }
+    // Set server to in-game state (not waiting for launch)
+    NET_SV_SetState(2);  // SERVER_IN_GAME
+
+    // 3. Tell JS layer to start broadcasting server beacons
+    // New peers will discover us via the election protocol
+    EM_ASM({
+        if (globalThis._webxdcChannel) {
+            // Broadcast server beacon immediately + every 5 seconds
+            var startedAt = globalThis._appStartedAt || Date.now();
+            var buf = new ArrayBuffer(16);
+            var u8 = new Uint8Array(buf);
+            u8[0] = 43; u8[1] = 43; u8[2] = 43; u8[3] = 43;
+            var f64 = new Float64Array(buf, 8, 1);
+            f64[0] = startedAt;
+            try { globalThis._webxdcChannel.send(u8); } catch(e) {}
+            setInterval(function() {
+                try { globalThis._webxdcChannel.send(u8); } catch(e) {}
+            }, 5000);
+        }
+        console.log("doom: host migration — now broadcasting server beacons");
+    });
+
+    printf("doom: host migration — promoted to host, server started\n");
+}
+
 static void D_Disconnected(void)
 {
     // In drone mode, the game cannot continue once disconnected.
@@ -288,6 +339,10 @@ void D_ReceiveTic(ticcmd_t *ticcmds, boolean *players_mask)
         }
     }
 
+    // Also set local player's ingame flag (BuildNewTic only sets cmds)
+    ticdata[recvtic % BACKUPTICS].ingame[localplayer] = true;
+
+    received_first_tic = true;
     ++recvtic;
 }
 
@@ -327,6 +382,7 @@ void D_StartNetGame(net_gamesettings_t *settings, netgame_startup_callback_t cal
 
     offsetms = 0;
     recvtic = 0;
+    received_first_tic = false;
 
     settings->consoleplayer = 0;
     settings->num_players = 1;
@@ -624,6 +680,8 @@ static void SinglePlayerClear(ticcmd_set_t *set)
 // TryRunTics
 //
 
+static void D_BuildAndSendWorldState(void);
+
 void TryRunTics(void)
 {
     int i;
@@ -676,23 +734,48 @@ void TryRunTics(void)
 
     if (counts < 1) counts = 1;
 
-    // wait for new tics if needed
-    while (!PlayersInGame() || lowtic < gametic / ticdup + counts) {
-        NetUpdate();
+    // VectorDoom: NEVER wait for remote tics. The snapshot system is the sole
+    // authority for remote player state. Tics are only meaningful for the local
+    // player. For remote players, we fabricate idle tics immediately so the
+    // game loop always runs at full speed regardless of network conditions.
 
+    if (net_client_connected && lowtic < gametic / ticdup + counts) {
+        int target = gametic / ticdup + counts;
+        // Safety: don't fabricate beyond what we've locally produced
+        if (target > maketic) target = maketic;
+        while (recvtic < target) {
+            int idx = recvtic % BACKUPTICS;
+            int p;
+            for (p = 0; p < NET_MAXPLAYERS; ++p) {
+                if (!drone && p == localplayer) continue;
+                // Zero input: remote players idle. Snapshots drive positioning.
+                memset(&ticdata[idx].cmds[p], 0, sizeof(ticcmd_t));
+                // Use authoritative ingame state, not uninitialized ticdata
+                ticdata[idx].ingame[p] = local_playeringame[p];
+            }
+            // Always ensure local player is marked in-game
+            ticdata[idx].ingame[localplayer] = true;
+            ++recvtic;
+        }
         lowtic = GetLowTic();
+    }
 
-        if (lowtic < gametic / ticdup) I_Error("TryRunTics: lowtic < gametic");
+    // Netgame: fabrication above already handled everything.
+    // Recalculate counts based on what we can actually run post-fabrication.
+    if (net_client_connected) {
+        counts = lowtic - gametic / ticdup;
+        if (counts < 1) return;  // nothing runnable yet, try next frame
+    }
 
-        // Still no tics to run? Sleep until some are available.
-        if (lowtic < gametic / ticdup + counts) {
-            // If we're in a netgame, we might spin forever waiting for
-            // new network data to be received. So don't stay in here
-            // forever - give the menu a chance to work.
+    // Non-netgame only: brief wait for local tics.
+    if (!net_client_connected) {
+        while (!PlayersInGame() || lowtic < gametic / ticdup + counts) {
+            NetUpdate();
+            lowtic = GetLowTic();
+            if (lowtic < gametic / ticdup) I_Error("TryRunTics: lowtic < gametic");
             if (I_GetTime() / ticdup - entertic >= MAX_NETGAME_STALL_TICS) {
                 return;
             }
-
             I_Sleep(1);
         }
     }
@@ -719,15 +802,10 @@ void TryRunTics(void)
             loop_interface->RunTic(set->cmds, set->ingame);
             gametic++;
 
-            // Send periodic state snapshots to correct desync
+            // Send unified world state (snapshot + health + NPC in one packet)
             if (net_client_connected && gametic % SNAPSHOT_INTERVAL == 0
                 && gametic > BACKUPTICS) {
-                D_BuildAndSendSnapshot();
-                // Host broadcasts authoritative health + NPC state
-                if (is_host) {
-                    D_BuildAndSendHealthAuth();
-                    D_BuildAndSendNPCState();
-                }
+                D_BuildAndSendWorldState();
             }
 
             // modify command for duplicated tics
@@ -746,10 +824,46 @@ void D_BuildAndSendSnapshot(void) {
     NET_CL_SendPlayerState(localplayer, gametic, data);
 }
 
+// VectorDoom: unified world state — one packet with everything.
+static void D_BuildAndSendWorldState(void) {
+    int snap_data[9];
+    int health_data[NET_MAXPLAYERS * 5];
+    unsigned char npc_buf[4000];
+    int npc_len = 0;
+
+    if (!net_client_connected || !loop_interface->BuildPlayerSnapshot) return;
+
+    // Build player snapshot
+    loop_interface->BuildPlayerSnapshot(localplayer, snap_data);
+
+    // Build host authority data if we're the host
+    if (is_host) {
+        if (loop_interface->BuildHealthAuth)
+            loop_interface->BuildHealthAuth(health_data);
+
+        extern int P_BuildNPCSnapshot(unsigned char *buf, int maxlen);
+        npc_len = P_BuildNPCSnapshot(npc_buf, sizeof(npc_buf));
+        if (npc_len < 0) npc_len = 0;
+    }
+
+    NET_CL_SendWorldState(localplayer, gametic, snap_data,
+                          is_host, health_data, NET_MAXPLAYERS,
+                          npc_buf, npc_len);
+}
+
 void D_ApplyPlayerSnapshot(int player, int gametic_snap, int *data) {
     if (player == localplayer) return;  // never correct own player
     if (!loop_interface->ApplyPlayerSnapshot) return;
     loop_interface->ApplyPlayerSnapshot(player, data);
+}
+
+// VectorDoom: called by server when a client disconnects/times out.
+// Marks the player as no longer in game so PlayerQuitGame fires in RunTic.
+void D_PlayerDisconnected(int player) {
+    if (player >= 0 && player < NET_MAXPLAYERS) {
+        local_playeringame[player] = false;
+        printf("doom: player %d marked disconnected\n", player);
+    }
 }
 
 void D_BuildAndSendHealthAuth(void) {

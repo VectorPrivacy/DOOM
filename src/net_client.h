@@ -36,6 +36,11 @@ void NET_CL_SendHealthAuth(int *data, int num_players);
 void NET_CL_SendRespawnRequest(int player);
 void NET_CL_SendDamageEvent(int source_player, int target_player, int damage);
 void NET_CL_SendNPCState(unsigned char *data, int len);
+void NET_CL_SendWorldState(int player, int gametic_val,
+                           int *snap_data,
+                           boolean is_host_flag,
+                           int *health_data, int num_players,
+                           unsigned char *npc_data, int npc_len);
 void NET_CL_SendNPCDamage(int source_player, unsigned short target_net_id, int damage);
 void NET_CL_SendUseEvent(int player);
 void NET_CL_SendChatMessage(int player, const char *msg);
