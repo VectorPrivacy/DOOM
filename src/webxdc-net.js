@@ -160,21 +160,30 @@
     // --- Server election ---
     var whoIsServerReq = new Uint8Array([42, 42, 42, 42]);
 
-    // Broadcast "who is server?" every 500ms
     function trySend(data) {
         try { channel.send(data); } catch(e) { /* channel not ready yet */ }
     }
-    trySend(whoIsServerReq);
-    var requestInterval = setInterval(function() {
-        if (!serverElected) trySend(whoIsServerReq);
-    }, 500);
 
-    // If no earlier server found within 5 seconds, we're it
-    // (Iroh gossip peer discovery can take a few seconds)
-    var electionTimeout = setTimeout(function() {
-        trySend(makeServerResponse(thisAppStartedAt));
-        resolveAndCleanUp(true);
-    }, 5000);
+    // Delay election start — on Android, the realtime channel needs time
+    // to initialize (JNI/WS bridge). Sending immediately can fail silently.
+    // Tank Wars (which works on Android) also delays its first send.
+    var requestInterval;
+    var electionTimeout;
+
+    function startElection() {
+        trySend(whoIsServerReq);
+        requestInterval = setInterval(function() {
+            if (!serverElected) trySend(whoIsServerReq);
+        }, 500);
+
+        // Self-elect after 5 seconds if no earlier server found
+        electionTimeout = setTimeout(function() {
+            trySend(makeServerResponse(thisAppStartedAt));
+            resolveAndCleanUp(true);
+        }, 5000);
+    }
+
+    setTimeout(startElection, 500);
 
     globalThis._serverElectionP.then(function(isServer) {
         console.log('VectorDoom: I am ' + (isServer ? 'the SERVER' : 'a CLIENT'));
